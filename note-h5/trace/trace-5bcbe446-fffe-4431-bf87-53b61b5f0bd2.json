@@ -1,0 +1,71 @@
+{
+  "trace_id": "5bcbe446-fffe-4431-bf87-53b61b5f0bd2",
+  "task_id": "a5317c6f-be2a-4b9b-bffd-ef97fc757332",
+  "timestamp": "2026-05-26T19:56:11.824085",
+  "agent_sequence": [
+    {
+      "agent": "planner",
+      "input": {
+        "task_id": "a5317c6f-be2a-4b9b-bffd-ef97fc757332"
+      },
+      "output": {
+        "task_description": "\u6d4b\u8bd5\u7ecf\u9a8c\u4fdd\u5b58",
+        "estimated_steps": 2,
+        "steps": [
+          {
+            "step": 1,
+            "agent": "coder",
+            "description": "\u793a\u4f8b\u6b65\u9aa4 1",
+            "target_file": "src/example.tsx"
+          },
+          {
+            "step": 2,
+            "agent": "reviewer",
+            "description": "\u5ba1\u67e5\u4ee3\u7801"
+          }
+        ]
+      },
+      "status": "completed",
+      "timestamp": "2026-05-26T19:56:11.835437"
+    },
+    {
+      "agent": "coder",
+      "input": {
+        "file_path": "src/example.tsx"
+      },
+      "output": {
+        "file_path": "src/example.tsx",
+        "success": true,
+        "code_length": 66
+      },
+      "status": "completed",
+      "timestamp": "2026-05-26T19:56:11.837826"
+    },
+    {
+      "agent": "reviewer",
+      "input": {},
+      "output": {
+        "passed": true,
+        "summary": "\u4ee3\u7801\u8d28\u91cf\u826f\u597d",
+        "issues": [],
+        "score": 95
+      },
+      "status": "completed",
+      "timestamp": "2026-05-26T19:56:11.841906"
+    },
+    {
+      "agent": "reviewer",
+      "input": {},
+      "output": {
+        "passed": true,
+        "summary": "\u4ee3\u7801\u8d28\u91cf\u826f\u597d",
+        "issues": [],
+        "score": 95
+      },
+      "status": "completed",
+      "timestamp": "2026-05-26T19:56:17.077123"
+    }
+  ],
+  "status": "success",
+  "ended_at": "2026-05-26T19:56:26.361014"
+}

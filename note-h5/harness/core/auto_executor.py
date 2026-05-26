@@ -382,7 +382,7 @@ class AutoExecutor:
                 "step": 1,
                 "agent": "coder",
                 "description": "创建 API 服务",
-                "target_file": "src/api/noteService.ts",
+                "target_file": "src/api/xxxService.ts",
                 "requirements": [
                     "从 @/types 导入类型",
                     "导出服务对象，提供完整的 CRUD 方法",
@@ -644,6 +644,9 @@ class AutoExecutor:
         description = step.get("description", "审查代码")
 
         print(f"\n[Review Loop] 开始代码审查循环")
+
+        # 每步清空历史问题，只关注当前步骤
+        self.historical_issues = []
 
         # 获取需要审查的 Coder 步骤（在这个 Reviewer 之前的 Coder 步骤）
         coder_steps_to_review = self._get_coder_steps_before_reviewer(result, step)
@@ -1664,8 +1667,8 @@ class AutoExecutor:
         # 可用的 API 函数
         available_apis = self.code_context.get("available_apis", [])
         if available_apis:
-            prompt += f"\n可用 API 函数（从 @/api/noteService 导入）:\n"
-            prompt += f"  - getNotes, createNote, updateNote, deleteNote\n"
+            prompt += f"\n可用 API 函数（从 @/api/xxxService 导入）:\n"
+            prompt += f"  - getItems, createItem, updateItem, deleteItem\n"
 
         # 可用的类型 - 明确指出导入路径
         available_types = self.code_context.get("available_types", [])
@@ -1717,9 +1720,9 @@ class AutoExecutor:
         prompt += f"\n禁止导入:\n"
         prompt += f"  - @/api/mockApi 的任何内容（内部实现）\n"
         prompt += f"  - @/services/* （不存在）\n"
-        prompt += f"  - @/hooks/useAuth （不存在）\n"
-        prompt += f"  - @/types/noteTypes （不存在，使用 @/types）\n"
-        prompt += f"  - @/types/Note.ts （不存在，使用 @/types）\n"
+        prompt += f"  - @/hooks/useAuth （不存在，除非 code_context 中已列出）\n"
+        prompt += f"  - @/types/xxxTypes （不存在，使用 @/types）\n"
+        prompt += f"  - @/types/Xxx.ts （不存在，使用 @/types）\n"
 
         return prompt
 
@@ -1831,8 +1834,8 @@ class AutoExecutor:
 
         return "\n".join(context_parts) if context_parts else "无特定上下文信息"
 
-    def _get_note_type_definition(self) -> str:
-        """获取 Note 类型的权威定义（从 types/index.ts 读取）"""
+    def _get_types_content(self) -> str:
+        """获取 src/types/index.ts 的完整内容"""
         try:
             types_file = self.base_dir / "src" / "types" / "index.ts"
             if types_file.exists():
@@ -1840,10 +1843,6 @@ class AutoExecutor:
         except Exception:
             pass
         return ""
-
-    def _get_types_content(self) -> str:
-        """获取 src/types/index.ts 的完整内容（通用版本）"""
-        return self._get_note_type_definition()
 
     def _get_existing_src_files(self) -> List[str]:
         """获取 src/ 下所有已存在的 .ts/.tsx 文件列表"""
@@ -1939,26 +1938,8 @@ class AutoExecutor:
         errors = []
         schema = self._load_components_schema()
 
-        # 1. 检查是否使用了 Note 中不存在的字段
-        invalid_fields_patterns = [
-            (r'\bnote\.title\b', "Note 类型中不存在 title 字段（只有 content）"),
-            (r'\bnote\.tags\b', "Note 类型中不存在 tags 字段"),
-            (r'\btag\.id\b', "Note 类型中不存在 tag 字段"),
-            (r'\btag\.name\b', "Note 类型中不存在 tag 字段"),
-            (r'\bnote\.isPinned\b', "Note 类型中字段是 isTop，不是 isPinned"),
-            (r'\bnote\.isArchived\b', "Note 类型中字段是 isArchive，不是 isArchived"),
-            (r'\bnote\.createdAt\b', "Note 类型中字段是 createTime，不是 createdAt"),
-        ]
-
-        for pattern, message in invalid_fields_patterns:
-            import re
-            if re.search(pattern, code):
-                errors.append({
-                    "severity": "error",
-                    "category": "type-consistency",
-                    "message": message,
-                    "suggestion": f"请使用 @/types/index.ts 中定义的正确字段名"
-                })
+        # 1. 检查是否使用了类型中不存在的字段（根据实际 types/index.ts 动态检查）
+        # 注：此处不再硬编码任何项目特定的字段规则，统一交由 TypeScript 编译器检查
 
         # 2. 根据目标文件匹配组件 Schema
         component_name = self._match_component_name(target_file, schema)
@@ -1968,8 +1949,8 @@ class AutoExecutor:
             # 检查 Props 接口定义
             props_interface = component_schema.get("props_interface", "")
             if props_interface and f"interface {props_interface}" not in code:
-                # 检查是否有内联 Props 定义
-                if "interface NoteCardProps" not in code and "NoteCardProps" not in code:
+                # 检查是否有内联 Props 定义（以 Props 结尾的接口名）
+                if not re.search(r'interface \w+Props', code):
                     pass  # 可能是函数式 Props，暂时不报错
 
             # 3. 检查必需回调是否被调用

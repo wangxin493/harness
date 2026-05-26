@@ -11,40 +11,36 @@ SCHEMA_PLACEHOLDER
 ### API 服务导入
 ```typescript
 // ✅ 唯一正确的导入方式
-import { noteService } from "@/api/noteService";
+import { xxxService } from "@/api/xxxService";
 
-// 使用方式
-const notes = await noteService.getNotes();
-const newNote = await noteService.createNote({ title, content });
-const updatedNote = await noteService.updateNote(id, { isPinned: true });
-await noteService.deleteNote(id);
+// 使用方式（具体方法名根据实际 service 定义）：
+const data = await xxxService.getItems();
+const newItem = await xxxService.createItem({ name, data });
+await xxxService.deleteItem(id);
 
 // ❌ 禁止以下导入方式
-import { getNotes } from "@/api/noteService";  // 错误：noteService 只导出对象
-import { noteService } from "@/api/note";       // 错误：note.ts 不存在
-import { noteService } from "@/services/...";   // 错误：services 路径不存在
+import { getItems } from "@/api/xxxService";   // 错误：xxxService 只导出对象
+import { xxxService } from "@/api/xxx";         // 错误：文件路径不对
+import { xxxService } from "@/services/...";    // 错误：services 路径不存在
 ```
 
 ### 类型导入
 ```typescript
 // ✅ 唯一正确的导入方式
-import { Note, NoteInput, NoteUpdate, Tag, Folder, User } from "@/types";
+import { Item, ItemInput } from "@/types";
 
 // ❌ 禁止以下导入方式
-import { Note } from "@/types/noteTypes";   // 错误：noteTypes 文件不存在
-import { Note } from "@/types/note";        // 错误：note 文件不存在
-import type { Note } from "@/types/note";   // 错误：不存在的文件
+import { Item } from "@/types/itemTypes";   // 错误：itemTypes 文件不存在
+import { Item } from "@/types/item";        // 错误：item 文件不存在
 ```
 
 ### Hook 导入
 ```typescript
 // ✅ 正确的导入方式（只导入 Hook 函数）
-import { useNotes } from "@/hooks/useNotes";
-import { useFolders } from "@/hooks/useFolders";
+import { useXxx } from "@/hooks/useXxx";
 
 // ❌ 禁止的导入方式（Hook 只导出函数，不导出 Provider）
-import { NotesProvider } from "@/hooks/useNotes";  // 错误：NotesProvider 不存在
-import { useAuth } from "@/hooks/useAuth";          // 错误：useAuth 不存在（除非明确创建了）
+import { XxxProvider } from "@/hooks/useXxx";  // 错误：XxxProvider 不存在
 ```
 
 ### 现有可用文件清单（以实际代码上下文为准）
@@ -82,30 +78,28 @@ src/types/
 
 ```typescript
 // ✅ 正确：先展开，后覆盖默认值
-const newNote: Note = {
-  id: `note_${Date.now()}`,
+const newItem: Item = {
+  id: `item_${Date.now()}`,
   createdAt: now,
   updatedAt: now,
   isDeleted: false,
   ...data,  // 先展开输入数据
   userId,
-  isArchived: data.isArchived ?? false,  // 后覆盖默认值
-  isPinned: data.isPinned ?? false,
+  isActive: data.isActive ?? true,  // 后覆盖默认值
 };
 
 // ❌ 错误：后展开会覆盖前面的属性
-const newNote: Note = {
+const newItem: Item = {
   userId,
-  isArchived: false,
-  isPinned: false,
+  isActive: true,
   ...data,  // 会覆盖前面的属性！
 };
 
 // ❌ 错误：缺少必需属性
-const newNoteData: Note = {
-  title,
+const newItemData: Item = {
+  name,
   content,
-  // 缺少 isArchived, isPinned 等必需属性
+  // 缺少 isActive 等必需属性
 };
 ```
 
@@ -137,20 +131,12 @@ const newNoteData: Note = {
 - 绝对禁止使用 `@/services/` 导入路径（此路径不存在）
 - 只使用 `@/api/` 目录下已存在的模块
 - 禁止导入 `@/api/mockApi` 中的函数（它是内部实现，不应直接导入）
-- **API 使用规则：只从 @/api/noteService 导入 `noteService` 对象**
-  - ✓ 正确: `import { noteService } from "@/api/noteService"`
-  - ✗ 错误: `import { getNotes } from "@/api/noteService"`
+- **API 使用规则：只从 @/api/xxxService 导入 `xxxService` 对象**
+  - ✓ 正确: `import { xxxService } from "@/api/xxxService"`
+  - ✗ 错误: `import { getItems } from "@/api/xxxService"`
   - ✗ 错误: `import { delay } from "@/api/mockApi"`
-- **类型导入必须使用 `@/types`（不要使用 @/types/note.ts 或 @/types/noteTypes）**
-- 如果目标文件已存在，读取现有文件内容并在此基础上修改
-- 不要重复定义已有的函数、组件、类型
-
-**⚠️ 导入验证规则：**
-- **类型导入必须使用 `@/types`** - 这是唯一的正确路径
-- 禁止使用 `@/types/note.ts`、`@/types/noteTypes` 等具体文件路径
-- 导入前必须确认模块路径存在
-- 导入前必须确认函数/类型在该模块中被导出
-- 禁止导入不存在的类型（如 StorageKey、NotesProvider）
+- **类型导入必须使用 `@/types`（不要使用 @/types/xxx.ts 或 @/types/xxxTypes）**
+- 禁止导入不存在的类型（如 SomeProvider、SomeKey）
 
 ### 5. 错误处理
 - 异步函数必须使用 `try/catch`
@@ -165,12 +151,12 @@ const newNoteData: Note = {
 - **🔥 导入本项目的所有文件必须使用命名导入**：
   ```typescript
   // ✅ 正确：命名导入
-  import { NoteList } from "./pages/NoteList";
-  import { useNotes } from "@/hooks/useNotes";
-  
+  import { XxxList } from "./pages/XxxList";
+  import { useXxx } from "@/hooks/useXxx";
+
   // ❌ 禁止：default 导入（因为本项目的所有文件都用命名导出）
-  import NoteList from "./pages/NoteList";   // 错误！NoteList 是命名导出
-  import App from "./App";                    // 错误！App 是命名导出
+  import XxxList from "./pages/XxxList";   // 错误！XxxList 是命名导出
+  import App from "./App";                   // 错误！App 是命名导出
   ```
 
 ## 输出格式
@@ -179,15 +165,14 @@ const newNoteData: Note = {
 
 ```json
 {
-  "file_path": "src/pages/NoteList.tsx",
+  "file_path": "src/pages/XxxList.tsx",
   "code": "// 完整的代码内容",
-  "imports": ["@/hooks/useNotes", "@/types"],
+  "imports": ["@/hooks/useXxx", "@/types"],
   "explanation": "简要说明代码结构和关键点",
   "npm_install": ["antd", "@ant-design/icons"],
   "field_mapping": {
-    "isTop": "isTop",
-    "isArchive": "isArchive",
-    "createTime": "createTime"
+    "fieldA": "fieldA",
+    "fieldB": "fieldB"
   }
 }
 ```
@@ -199,14 +184,14 @@ const newNoteData: Note = {
 ```json
 // 代码使用了 antd 组件
 {
-  "file_path": "src/components/NoteCard.tsx",
+  "file_path": "src/components/XxxCard.tsx",
   "code": "import { Card } from 'antd'; ...",
   "npm_install": ["antd", "@ant-design/icons"]
 }
 
 // 代码只使用 react 和本地模块
 {
-  "file_path": "src/hooks/useNotes.tsx",
+  "file_path": "src/hooks/useXxx.tsx",
   "code": "import { useState } from 'react'; ...",
   "npm_install": []
 }
@@ -217,14 +202,13 @@ const newNoteData: Note = {
 为了保证类型一致性，**必须**在输出 JSON 中包含 `field_mapping`，声明该文件使用的字段名与 `@/types/index.ts` 定义的标准字段名的对应关系。
 
 ```json
-// types/index.ts 定义: isTop, isArchive, createTime
-// 代码中使用: isPinned (对应 isTop), isArchived (对应 isArchive)
+// types/index.ts 定义: fieldA, fieldB
+// 代码中使用: aliasA (对应 fieldA), aliasB (对应 fieldB)
 {
-  "file_path": "src/api/noteService.ts",
+  "file_path": "src/api/xxxService.ts",
   "field_mapping": {
-    "isTop": "isPinned",      // 代码用 isPinned，但类型定义是 isTop
-    "isArchive": "isArchived", // 代码用 isArchived，但类型定义是 isArchive
-    "createTime": "createdAt"  // 代码用 createdAt，但类型定义是 createTime
+    "fieldA": "aliasA",   // 代码用 aliasA，但类型定义是 fieldA
+    "fieldB": "aliasB"    // 代码用 aliasB，但类型定义是 fieldB
   }
 }
 ```
@@ -232,9 +216,8 @@ const newNoteData: Note = {
 **重要**：如果字段名完全一致，也必须声明：
 ```json
 "field_mapping": {
-  "isTop": "isTop",
-  "isArchive": "isArchive",
-  "createTime": "createTime"
+  "fieldA": "fieldA",
+  "fieldB": "fieldB"
 }
 ```
 
@@ -242,102 +225,98 @@ const newNoteData: Note = {
 
 ### Service Layer (api/)
 ```typescript
-// ✅ 注意：不要创建新的 API 文件，只使用现有的 @/api/noteService
-// 如果需要新增功能，扩展现有的 noteService 或使用 noteService 中的方法
+// ✅ 注意：不要创建新的 API 文件，只使用现有的 @/api/xxxService
+// 如果需要新增功能，扩展现有的 xxxService 或使用 xxxService 中的方法
 ```
 
 ### Hook Layer (hooks/)
 ```typescript
 import { useState, useCallback } from "react";
-import { Note } from "@/types";
-import { noteService } from "@/api/noteService";
+import { Item } from "@/types";
+import { xxxService } from "@/api/xxxService";
 
-export function useNotes() {
-  const [notes, setNotes] = useState<Note[]>([]);
+export function useXxx() {
+  const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchNotes = useCallback(async () => {
+  const fetchItems = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await noteService.getNotes();
-      setNotes(data);
+      const data = await xxxService.getItems();
+      setItems(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "获取笔记失败");
+      setError(err instanceof Error ? err.message : "获取数据失败");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const createNewNote = useCallback(async (title: string, content: string) => {
+  const createItem = useCallback(async (input: Partial<Item>) => {
     try {
       setError(null);
-      const newNoteInput = {
-        title,
-        content,
-      };
-      const newNote = await noteService.createNote(newNoteInput);
-      setNotes(prev => [...prev, newNote]);
+      const newItem = await xxxService.createItem(input);
+      setItems(prev => [...prev, newItem]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建笔记失败");
+      setError(err instanceof Error ? err.message : "创建数据失败");
       throw err;
     }
   }, []);
 
-  const updateNoteState = useCallback(async (id: string, updates: Partial<Note>) => {
+  const updateItem = useCallback(async (id: string, updates: Partial<Item>) => {
     try {
       setError(null);
-      const updatedNote = await noteService.updateNote(id, updates);
-      setNotes(prev => prev.map(n => n.id === id ? updatedNote : n));
+      const updatedItem = await xxxService.updateItem(id, updates);
+      setItems(prev => prev.map(n => n.id === id ? updatedItem : n));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新笔记失败");
+      setError(err instanceof Error ? err.message : "更新数据失败");
       throw err;
     }
   }, []);
 
-  const removeNote = useCallback(async (id: string) => {
+  const removeItem = useCallback(async (id: string) => {
     try {
       setError(null);
-      await noteService.deleteNote(id);
-      setNotes(prev => prev.filter(n => n.id !== id));
+      await xxxService.deleteItem(id);
+      setItems(prev => prev.filter(n => n.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除笔记失败");
+      setError(err instanceof Error ? err.message : "删除数据失败");
       throw err;
     }
   }, []);
 
-  return { notes, loading, error, fetchNotes, createNote: createNewNote, updateNote: updateNoteState, deleteNote: removeNote };
+  return { items, loading, error, fetchItems, createItem, updateItem, deleteItem: removeItem };
 }
 ```
 
 ### Component Layer (pages/, components/)
 ```typescript
 import { useState, useEffect } from "react";
-import { useNotes } from "@/hooks/useNotes";
-import type { Note } from "@/types";
+import { useXxx } from "@/hooks/useXxx";
+import type { Item } from "@/types";
 
-export function NoteList() {
-  const { notes, loading, error, deleteNote, updateNote } = useNotes();
-  const [editingNote, setEditingNote] = useState<Note | null>(null);
+export function XxxList() {
+  const { items, loading, error, deleteItem, updateItem } = useXxx();
+  const [editingItem, setEditingItem] = useState<Item | null>(null);
 
   useEffect(() => {
-    // 数据已在 useNotes 中初始化
+    // 数据已在 useXxx 中初始化
   }, []);
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteNote(id);
+      await deleteItem(id);
     } catch (err) {
-      // 错误已在 useNotes 中处理
+      // 错误已在 useXxx 中处理
     }
   };
 
-  const handlePinToggle = async (note: Note) => {
+  const handleToggle = async (item: Item) => {
     try {
-      await updateNote(note.id, { isPinned: !note.isPinned });
+      await updateItem(item.id, { isActive: !item.isActive });
     } catch (err) {
-      // 错误已在 useNotes 中处理
+      // 错误已在 useXxx 中处理
     }
   };
 
@@ -345,16 +324,16 @@ export function NoteList() {
   if (error) return <div>错误: {error}</div>;
 
   return (
-    <div className="note-list">
-      {notes.map((note) => (
-        <div key={note.id} className="note-item">
-          <h3>{note.title}</h3>
-          <p>{note.content}</p>
-          <div className="note-actions">
-            <button onClick={() => handlePinToggle(note)}>
-              {note.isPinned ? "取消置顶" : "置顶"}
+    <div className="xxx-list">
+      {items.map((item) => (
+        <div key={item.id} className="xxx-item">
+          <h3>{item.name}</h3>
+          <p>{item.description}</p>
+          <div className="xxx-actions">
+            <button onClick={() => handleToggle(item)}>
+              {item.isActive ? "禁用" : "启用"}
             </button>
-            <button onClick={() => handleDelete(note.id)}>删除</button>
+            <button onClick={() => handleDelete(item.id)}>删除</button>
           </div>
         </div>
       ))}

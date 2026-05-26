@@ -1,10 +1,10 @@
 # Harness 配置文件
+# base_dir 从代码中自动推导，无需手动配置
 
 # 项目信息
 project:
   name: "note-h5"
   description: "轻量化笔记 H5 应用"
-  base_dir: "/Users/xiaowangtongzhi/Desktop/aiCode/note-h5"
 
 # 源码目录
 source:
@@ -40,21 +40,6 @@ llm:
   provider: "deepseek"
   model: "deepseek-coder"
   api_key_env: "DEEPSEEK_API_KEY"
-
-# 代码检查配置
-code_quality:
-  enabled: true
-  scripts:
-    deps_check: "scripts/lint-deps.py"
-    quality_check: "scripts/lint-quality.py"
-    validate: "scripts/validate.py"
-
-# 执行配置
-execution:
-  max_steps: 10
-  timeout_seconds: 300
-  auto_fix: true
-  retry_on_failure: true
 
 # 输出配置
 output:

@@ -479,27 +479,28 @@ class CodeScanner:
         """查找类似功能（改进版）"""
         # 实际应用中可以使用 NLP 相似度计算
         # 这里改进为更精确的关键字匹配
+        # 注：以下是通用功能关键词，适用于大多数 CRUD 应用
 
         # 更精确的关键词和模式映射
         keywords = {
-            "置顶": {
-                "patterns": ["togglePin", "setPinned", "pinNote", "unpinNote", "isPinned", "pinnedNotes"],
+            "置顶/Pin": {
+                "patterns": ["togglePin", "setPinned", "pinItem", "unpinItem", "isPinned", "pinnedItems"],
                 "context": ["置顶", "pin", "pinned"]
             },
-            "归档": {
-                "patterns": ["archiveNote", "unarchiveNote", "isArchived", "archivedNotes"],
+            "归档/Archive": {
+                "patterns": ["archiveItem", "unarchiveItem", "isArchived", "archivedItems"],
                 "context": ["归档", "archive", "archived"]
             },
-            "删除": {
-                "patterns": ["deleteNote", "removeNote", "deleteFile"],
+            "删除/Delete": {
+                "patterns": ["deleteItem", "removeItem", "deleteItem"],
                 "context": ["删除", "delete", "remove"]
             },
             "编辑/更新": {
-                "patterns": ["updateNote", "editNote", "modifyNote", "saveNote"],
+                "patterns": ["updateItem", "editItem", "modifyItem", "saveItem"],
                 "context": ["编辑", "更新", "edit", "update", "save", "修改"]
             },
             "查询": {
-                "patterns": ["getNote", "fetchNote", "findNote", "queryNotes", "listNotes"],
+                "patterns": ["getItem", "fetchItem", "findItem", "queryItems", "listItems"],
                 "context": ["查询", "获取", "fetch", "get", "query"]
             }
         }

@@ -29,7 +29,7 @@
 - [ ] 导入路径是否正确使用 `@/` 别名
 
 **项目架构约定**：
-- **Service Layer** 位于 `api/` 目录（如 `@/api/noteService`）
+- **Service Layer** 位于 `api/` 目录（如 `@/api/xxxService`）
 - Hook → Service 的导入路径应为 `@/api/xxxService`
 - ⚠️ 不要求 `@/services/` 路径（此路径不存在）
 
@@ -109,7 +109,7 @@ const handleKeyDown = useCallback((e: KeyboardEvent<HTMLButtonElement>) => {
 - [ ] 依赖的模块是否存在
 - [ ] 导入的函数/类型是否在该模块中实际存在
 - [ ] 禁止从 `@/api/mockApi` 导入函数（它是内部实现）
-- [ ] 禁止导入不存在的类型（如 StorageKey、NotesProvider）
+- [ ] 禁止导入不存在的类型（如 SomeType、XxxProvider 等 code_context 中未列出的类型）
 
 **🔥 导入验证规则（必须检查）：**
 
@@ -127,33 +127,33 @@ const handleKeyDown = useCallback((e: KeyboardEvent<HTMLButtonElement>) => {
 #### API 服务导入验证
 ```typescript
 // ✅ 正确
-import { noteService } from "@/api/noteService";
-const notes = await noteService.getNotes();
+import { xxxService } from "@/api/xxxService";
+const items = await xxxService.getItems();
 
 // ❌ 错误 - 必须报 error
-import { getNotes } from "@/api/noteService";    // noteService 只导出对象
-import { noteService } from "@/api/note";          // note.ts 不对外导出
-import { noteService } from "@/services/note";    // services 路径不存在
+import { getItems } from "@/api/xxxService";    // xxxService 只导出对象
+import { xxxService } from "@/api/xxx";          // xxx.ts 不对外导出
+import { xxxService } from "@/services/xxx";    // services 路径不存在
 ```
 
 #### 类型导入验证
 ```typescript
 // ✅ 正确
-import { Note, NoteInput } from "@/types";
+import { Item, ItemInput } from "@/types";
 
 // ❌ 错误 - 必须报 error
-import { Note } from "@/types/noteTypes";   // noteTypes 文件不存在
-import { Note } from "@/types/note";        // note 文件不存在
+import { Item } from "@/types/itemTypes";   // itemTypes 文件不存在
+import { Item } from "@/types/item";        // item 文件不存在
 ```
 
 #### Hook 导入验证
 ```typescript
 // ✅ 正确
-import { useNotes } from "@/hooks/useNotes";
+import { useXxx } from "@/hooks/useXxx";
 
 // ❌ 错误 - 必须报 error
-import { NotesProvider } from "@/hooks/useNotes";  // NotesProvider 不存在
-import { useAuth } from "@/hooks/useAuth";          // useAuth 不存在（除非已创建）
+import { XxxProvider } from "@/hooks/useXxx";  // XxxProvider 不存在
+import { useAuth } from "@/hooks/useAuth";      // useAuth 不存在（除非已创建）
 ```
 
 ### 10. 业务逻辑
