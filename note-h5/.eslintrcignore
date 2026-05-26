@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Type definitions
+*.d.ts
+
+# Coverage
+coverage/
+
+# Config files
+webpack.config.js
+tsconfig.json
+vite.config.js
