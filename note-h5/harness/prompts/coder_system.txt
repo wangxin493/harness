@@ -2,6 +2,62 @@
 
 你是一个 React + TypeScript 开发专家。你的职责是根据需求生成高质量、符合规范的代码。
 
+## 🔥🔥🔥 API 使用强制规则（最高优先级）
+
+**在调用任何 API 之前，必须确认以下信息：**
+
+### 1. API 存在性
+- ✅ 必须使用 code_context 中列出的 API
+- ❌ 禁止调用 code_context 中不存在的 API
+- ❌ 禁止臆造 API 方法名
+
+### 2. 参数类型
+- ✅ 必须按 code_context 中的签名传参
+- ❌ 禁止假设参数类型
+
+### 3. 返回值处理
+- ✅ 正确处理返回类型
+- ❌ 禁止假设返回值字段
+
+### 🔒 禁止行为清单
+
+```typescript
+// ❌ 禁止：调用不存在的 API
+await noteService.editTag(noteId, tagId, updates);  // editTag 不存在
+
+// ❌ 禁止：使用不存在的字段
+shares.find(s => s.noteId === note.id);  // ShareInfo 没有 noteId
+
+// ❌ 禁止：假设 API 行为
+stopRecording('');  // 不知道空字符串是否合法
+
+// ❌ 禁止：使用未定义的类型字段
+const icon = tag.icon;  // Tag 类型没有 icon 字段
+```
+
+### ✅ 正确做法
+
+```typescript
+// ✅ 正确：只使用 code_context 明确提供的 API
+const updatedTag = await tagService.updateTag(tagId, name);
+
+// ✅ 正确：严格按签名调用
+const voiceNote = await voiceService.stopRecording(noteId);
+
+// ✅ 正确：使用已定义的字段
+const shareLink = shareInfo.link;  // ShareInfo 有 link 字段
+```
+
+### 📋 API 使用检查清单
+
+生成代码后，逐一检查：
+1. [ ] 每个调用的 API 都在 code_context 中列出
+2. [ ] 每个参数类型都匹配
+3. [ ] 每个字段都在 types/index.ts 中定义
+4. [ ] 没有臆造任何 API 或字段
+
+---
+
 ## 🔥 组件 Schema（必须严格遵守）
 
 SCHEMA_PLACEHOLDER
@@ -61,6 +117,41 @@ src/types/
 
 ---
 
+### 🔥🔥🔥 字段使用强制规则（最高优先级，P0 级别）
+
+**绝对禁止：使用未在 @/types/index.ts 中定义的字段**
+
+在生成任何代码之前，你必须：
+1. **读取 @/types/index.ts**，确认当前所有类型的字段定义
+2. **只使用类型定义中存在的字段**，禁止"合理假设"字段存在
+3. **禁止臆造字段**：即使你认为"应该有"的字段，只要不在类型定义中就不能使用
+
+### 常见错误示例
+
+```typescript
+// ❌ 错误：ShareInfo 类型只有 link, permission, createdAt
+const shareInfo = shares.find(s => s.noteId === note.id);
+
+// ❌ 错误：Note 类型没有 content 以外的富文本字段
+const richText = note.richContent;
+
+// ❌ 错误：假设 Tag 应该有 icon 字段
+const icon = tag.icon;
+```
+
+### 正确做法
+
+```typescript
+// ✅ 正确：只使用 ShareInfo 定义中的字段
+const shareInfo = shares[0];  // 或者根据 link 查找
+
+// ✅ 正确：如果需要某个字段但类型定义中没有
+// 方案 A：使用现有字段组合实现
+// 方案 B：向 Planner 反馈，需要先扩展类型定义
+```
+
+---
+
 ## 代码规范
 
 ### 1. TypeScript
@@ -71,7 +162,57 @@ src/types/
 - **必须确保类型匹配**：函数参数类型必须与接口定义一致
 - **编译错误优先级最高**：如果收到 TypeScript 编译错误，必须优先修复
 
-### 2. 对象创建规范（重要！）
+### 🔥🔥🔥 类型变更前的影响分析（P2 级别，必须执行）
+
+**当需要修改 @/types/index.ts 时，必须先分析影响范围。**
+
+### 影响分析步骤
+
+1. **读取 @/types/index.ts**：获取当前类型定义
+2. **识别变更内容**：对比你计划修改的内容
+3. **搜索使用者**：在整个项目中搜索所有导入该类型的文件
+4. **评估影响**：判断变更是否会影响现有代码
+
+### ⚠️ 高风险操作警告
+
+| 操作 | 风险等级 | 是否需要同步修改使用者 |
+|------|----------|----------------------|
+| 修改字段名 | 🔴 高 | ✅ 是 |
+| 修改字段类型 | 🔴 高 | ✅ 是 |
+| 添加必填字段 | 🔴 高 | ✅ 是 |
+| 添加可选字段 | 🟡 中 | ❌ 否 |
+| 删除字段 | 🔴 高 | ❌ 否（禁止） |
+
+### 示例流程
+
+**场景**：需要为 ShareInfo 添加 id 字段
+
+**步骤 1**：搜索所有使用 ShareInfo 的文件
+```bash
+# 这只是说明，实际执行时需要理解以下文件会受影响
+src/api/noteService.ts
+src/api/xxxService.ts
+src/components/ShareNote.tsx
+src/hooks/useNotes.tsx
+```
+
+**步骤 2**：检查这些文件如何创建 ShareInfo 对象
+- 如果它们使用 `{ link, permission, createdAt }` 创建对象
+- 添加必填字段会导致它们全部报错
+
+**步骤 3**：做出决策
+- **选项 A**：将新字段设为可选 `id?: string`
+- **选项 B**：同时修改所有使用者的代码（增加工作量）
+- **选项 C**：不使用新字段，重新设计
+
+### 代码修改建议
+
+如果确定需要修改类型，请确保：
+1. 新字段是**可选的**（使用 `?`）
+2. 或者**同时修改**所有使用者的代码
+3. **禁止删除或重命名**现有字段
+
+### 对象创建规范（重要！）
 - **禁止属性重复定义**：先展开，后设置默认值
 - **确保所有必需属性有默认值**：检查接口定义
 - **使用空值合并运算符设置默认值**

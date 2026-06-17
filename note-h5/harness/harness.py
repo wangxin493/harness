@@ -239,6 +239,10 @@ class TraceRecorder:
 
         with open(trace_file, "w", encoding="utf-8") as f:
             json.dump(trace_data, f, indent=2)
+
+        # 同时更新人类可读的 .md 文件
+        self._update_trace_md(trace_id, trace_data)
+
         return True
 
     def end_trace(self, trace_id: str, status: str) -> bool:
@@ -255,7 +259,198 @@ class TraceRecorder:
 
         with open(trace_file, "w", encoding="utf-8") as f:
             json.dump(trace_data, f, indent=2)
+
+        # 生成最终的人类可读报告
+        self._generate_trace_md(trace_id, trace_data)
+
         return True
+
+    def _update_trace_md(self, trace_id: str, trace_data: Dict[str, Any]) -> None:
+        """更新执行中的人类可读文件"""
+        md_file = self.trace_dir / f"trace-{trace_id}.md"
+
+        lines = [
+            "# 执行追踪报告",
+            "",
+            "## 基本信息",
+            f"- **状态**: {trace_data.get('status', 'unknown')}",
+            f"- **时间**: {trace_data.get('timestamp', '')}",
+            "",
+            "## 执行步骤",
+            "",
+            "| # | Agent | 描述 | 状态 |",
+            "|---|-------|------|------|",
+        ]
+
+        for i, step in enumerate(trace_data.get("agent_sequence", []), 1):
+            agent = step.get("agent", "")
+            desc = step.get("description", "") or self._get_step_description(step)
+            status_icon = self._get_step_icon(step)
+            lines.append(f"| {i} | {agent} | {desc} | {status_icon} |")
+
+        lines.append("")
+        lines.append("> ⚠️ 执行中，请稍后刷新查看最新状态...")
+
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    def _generate_trace_md(self, trace_id: str, trace_data: Dict[str, Any]) -> None:
+        """生成最终的人类可读报告"""
+        md_file = self.trace_dir / f"trace-{trace_id}.md"
+
+        status = trace_data.get("status", "unknown")
+        status_icon = self._status_to_icon(status)
+        status_text = {
+            "completed": "✅ 成功完成",
+            "partial_failure": "⚠️ 部分失败",
+            "failed": "❌ 执行失败"
+        }.get(status, status)
+
+        lines = [
+            f"# 执行追踪报告",
+            "",
+            "## 基本信息",
+            f"- **状态**: {status_text}",
+            f"- **开始时间**: {trace_data.get('timestamp', '')}",
+            f"- **结束时间**: {trace_data.get('ended_at', '')}",
+            "",
+            "## 执行步骤",
+            "",
+            "| # | Agent | 描述 | 状态 |",
+            "|---|-------|------|------|",
+        ]
+
+        for i, step in enumerate(trace_data.get("agent_sequence", []), 1):
+            agent = step.get("agent", "")
+            desc = step.get("description", "") or self._get_step_description(step)
+            icon = self._get_step_icon(step)
+            lines.append(f"| {i} | {agent} | {desc} | {icon} |")
+
+        # 提取错误信息
+        errors = self._extract_errors(trace_data)
+        if errors:
+            lines.extend([
+                "",
+                "## ❌ 错误详情",
+                ""
+            ])
+            for i, err in enumerate(errors, 1):
+                lines.append(f"### {i}. {err.get('file', '未知文件')}")
+                lines.append(f"- **错误**: {err.get('message', '')}")
+                if err.get('suggestion'):
+                    lines.append(f"- **建议**: {err.get('suggestion', '')}")
+                lines.append("")
+
+        # 统计生成的文件
+        generated_files = self._extract_generated_files(trace_data)
+        if generated_files:
+            lines.extend([
+                "",
+                "## 📁 生成的文件",
+                ""
+            ])
+            for file_path in generated_files:
+                lines.append(f"- `{file_path}`")
+
+        lines.extend([
+            "",
+            "---",
+            f"_由 AI Harness 自动生成于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_"
+        ])
+
+        with open(md_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    def _get_step_description(self, step: Dict[str, Any]) -> str:
+        """从步骤数据中提取描述"""
+        output = step.get("output", {})
+        if isinstance(output, dict):
+            # Planner 输出
+            if "task_description" in output:
+                return output["task_description"]
+            # Coder 输出
+            if "file_path" in output:
+                return f"生成 {output['file_path']}"
+            # Reviewer 输出
+            if "summary" in output:
+                return output["summary"]
+        return ""
+
+    def _get_step_icon(self, step: Dict[str, Any]) -> str:
+        """获取步骤图标，根据 Agent 类型和输出结果判断"""
+        agent = step.get("agent", "")
+        status = step.get("status", "").lower()
+        output = step.get("output", {})
+
+        # 先检查状态
+        if status == "failed":
+            return "❌ 失败"
+
+        # Planner 和 Coder 只看状态
+        if agent in ("planner", "coder"):
+            return self._status_to_icon(status)
+
+        # Reviewer 需要看 passed 字段
+        if agent == "reviewer":
+            passed = output.get("passed")
+            if passed is True:
+                return "✅ 通过"
+            elif passed is False:
+                return "❌ 不通过"
+            # 兼容没有 passed 字段的情况
+            return self._status_to_icon(status)
+
+        return self._status_to_icon(status)
+
+    def _status_to_icon(self, status: str) -> str:
+        """状态转图标"""
+        status = status.lower()  # 统一小写处理
+        mapping = {
+            "started": "🟡 开始",
+            "completed": "✅ 完成",
+            "failed": "❌ 失败",
+            "passed": "✅ 通过",
+            "partial_failure": "⚠️ 部分失败",
+            "success": "✅ 成功",
+            "true": "✅ 通过",
+            "false": "❌ 不通过"
+        }
+        return mapping.get(status, f"❓ {status}")
+
+    def _extract_errors(self, trace_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """从 trace 中提取错误信息"""
+        errors = []
+        for step in trace_data.get("agent_sequence", []):
+            if step.get("status") == "failed":
+                errors.append({
+                    "message": "步骤执行失败",
+                    "file": step.get("target_file", "")
+                })
+            output = step.get("output", {})
+            if isinstance(output, dict):
+                issues = output.get("issues", [])
+                for issue in issues:
+                    if issue.get("severity") == "error":
+                        errors.append({
+                            "message": issue.get("message", ""),
+                            "file": issue.get("file", ""),
+                            "suggestion": issue.get("suggestion", "")
+                        })
+        return errors
+
+    def _extract_generated_files(self, trace_data: Dict[str, Any]) -> List[str]:
+        """提取生成的文件列表"""
+        files = []
+        seen = set()
+        for step in trace_data.get("agent_sequence", []):
+            if step.get("agent") == "coder":
+                output = step.get("output", {})
+                if isinstance(output, dict) and "file_path" in output:
+                    fp = output["file_path"]
+                    if fp and fp not in seen:
+                        seen.add(fp)
+                        files.append(fp)
+        return files
 
 
 class MemoryStore:

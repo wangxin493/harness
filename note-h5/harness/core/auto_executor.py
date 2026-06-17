@@ -87,6 +87,9 @@ class AutoExecutor:
         # 历史问题记录（用于跟踪已经发现的问题）
         self.historical_issues: List[Dict[str, Any]] = []
 
+        # 当前任务描述（用于上下文裁剪）
+        self._current_task_description = ""
+
     def _ensure_reviewer_steps(self, plan: ExecutionPlan) -> None:
         """确保每个 Coder 步骤后面都有 Reviewer 步骤
 
@@ -136,6 +139,9 @@ class AutoExecutor:
         # 创建任务
         task = self.orchestrator.create_task(user_request, priority)
         trace_id = self.orchestrator.start_execution(task.task_id, user_request)
+
+        # 保存任务描述（用于上下文裁剪）
+        self._current_task_description = user_request
 
         result = {
             "task_id": task.task_id,
@@ -279,8 +285,8 @@ class AutoExecutor:
         """执行 Planner Agent"""
         print(f"\n[Planner] 分析需求: {user_request}")
 
-        # 获取 Planner 提示词
-        system_prompt = self.orchestrator.get_planner_prompt()
+        # 获取 Planner 提示词（传入任务描述以便裁剪上下文）
+        system_prompt = self.orchestrator.get_planner_prompt(task_description=user_request)
 
         # 调用 LLM 处理（通过注入的 handler）
         if self.planner_handler:
@@ -1179,8 +1185,11 @@ class AutoExecutor:
 
 请重新生成修复后的完整代码，确保解决所有问题。"""
 
-        # 获取系统提示词
-        system_prompt = self.orchestrator.get_coder_prompt()
+        # 获取系统提示词（传入目标文件以便裁剪上下文）
+        system_prompt = self.orchestrator.get_coder_prompt(
+            target_file=target_file,
+            task_description=self._current_task_description
+        )
 
         # 调用 Coder
         if self.coder_handler:
@@ -1305,8 +1314,11 @@ class AutoExecutor:
 
 请重新生成修复后的完整代码，确保解决所有问题。"""
 
-            # 获取系统提示词
-            system_prompt = self.orchestrator.get_coder_prompt()
+            # 获取系统提示词（传入目标文件和任务描述以便裁剪上下文）
+            system_prompt = self.orchestrator.get_coder_prompt(
+                target_file=target_file,
+                task_description=self._current_task_description
+            )
 
             # 调用 Coder 处理
             if self.coder_handler:
@@ -1392,8 +1404,11 @@ class AutoExecutor:
         print(f"\n[Coder] {description}")
         print(f"  目标文件: {target_file}")
 
-        # 获取 Coder 提示词
-        system_prompt = self.orchestrator.get_coder_prompt()
+        # 获取 Coder 提示词（传入目标文件和任务描述以便裁剪上下文）
+        system_prompt = self.orchestrator.get_coder_prompt(
+            target_file=target_file,
+            task_description=self._current_task_description
+        )
 
         # 构建用户提示
         user_prompt = self._build_coder_prompt(target_file, description, requirements)
@@ -1579,8 +1594,10 @@ class AutoExecutor:
             step_result["success"] = True
             return step_result
 
-        # 获取 Reviewer 提示词
-        system_prompt = self.orchestrator.get_reviewer_prompt()
+        # 获取 Reviewer 提示词（传入任务描述以便裁剪上下文）
+        system_prompt = self.orchestrator.get_reviewer_prompt(
+            task_description=self._current_task_description
+        )
 
         # 构建审查内容
         review_content = self._build_review_content(code_files)

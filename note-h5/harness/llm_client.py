@@ -67,7 +67,7 @@ class BaseLLMClient:
         prompt: str,
         system: str = "",
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> str:
         """
         聊天接口
@@ -102,7 +102,7 @@ class BaseLLMClient:
         prompt: str,
         system: str = "",
         temperature: float = 0.3,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ) -> dict:
         """
         聊天接口，返回 JSON

@@ -182,6 +182,124 @@ import { useAuth } from "@/hooks/useAuth";      // useAuth 不存在（除非已
 
 **不要依赖预设的字段名，每次都从实际文件中读取类型定义来对比。**
 
+## 🔥🔥🔥 类型变更保护检查（必须执行，P0 级别）
+
+**当代码修改了 @/types/index.ts 时，必须执行此检查。**
+
+### 核心原则
+
+类型变更是高风险操作。可能影响项目中所有使用该类型的文件。
+
+### 检查步骤
+
+1. **识别类型变更**：检查是否修改了 @/types/index.ts
+2. **提取变更内容**：对比变更前后的接口定义差异
+3. **分析影响范围**：搜索所有导入/使用该类型的文件
+4. **验证兼容性**：检查所有使用者是否需要修改
+
+### 必须检查的兼容性问题
+
+| 变更类型 | 影响 | 处理 |
+|----------|------|------|
+| 添加可选字段 | 低风险 | ✅ 可以，添加 `?` |
+| 添加必填字段 | **高风险** | ❌ 禁止，除非所有使用者同步更新 |
+| 删除字段 | **高风险** | ❌ 禁止，除非确认无使用 |
+| 修改字段类型 | **高风险** | ❌ 禁止，除非确认无使用 |
+| 重命名字段 | **高风险** | ❌ 禁止，使用 deprecated + 别名 |
+
+### 示例问题
+
+```typescript
+// ❌ 错误：添加必填字段会破坏现有代码
+interface ShareInfo {
+  id: string;           // 新增必填字段 - 会导致所有创建 ShareInfo 的地方报错
+  noteId: string;       // 新增必填字段 - 会导致所有创建 ShareInfo 的地方报错
+  link: string;
+  permission: 'view' | 'edit';
+  createdAt: string;
+}
+
+// ✅ 正确：如果确实需要添加字段，使用可选
+interface ShareInfo {
+  id?: string;          // 可选字段 - 不影响现有代码
+  noteId?: string;      // 可选字段 - 不影响现有代码
+  link: string;
+  permission: 'view' | 'edit';
+  createdAt: string;
+}
+```
+
+### 报告格式
+
+```json
+{
+  "file": "src/types/index.ts",
+  "severity": "error",
+  "category": "type-change-protection",
+  "message": "类型变更风险过高：添加了必填字段 id, noteId",
+  "affected_files": [
+    "src/api/noteService.ts",
+    "src/api/xxxService.ts",
+    "src/components/ShareNote.tsx",
+    "src/hooks/useNotes.tsx"
+  ],
+  "suggestion": "将 id, noteId 改为可选字段 (id?: string; noteId?: string;)"
+}
+```
+
+### 严重性判定
+
+| 场景 | 严重性 | 是否阻止通过 |
+|------|--------|-------------|
+| 添加可选字段 | warning | ❌ 不阻止 |
+| 添加必填字段 | **error** | ✅ **阻止** |
+| 删除字段 | **error** | ✅ **阻止** |
+| 修改字段类型 | **error** | ✅ **阻止** |
+| 重命名字段 | **error** | ✅ **阻止** |
+
+## 🔥🔥🔥 避免误报规则（必须遵守）
+
+### 1. 文件存在性判断
+**不要假设文件不存在**。只有以下情况才认为文件不存在：
+- code_context 明确标注该文件为 "不存在"
+- 文件路径明显不符合项目结构（如 `@/api/nonExistent.ts` 且项目中确实没有这个文件）
+
+**常见误报场景**：
+```typescript
+// ❌ 误报：voiceService 文件确实存在于 @/api/voiceService.ts
+import { voiceService } from "@/api/voiceService";
+
+// ✅ 正确：如果 file_context 列出了 voiceService，则导入有效
+// ✅ 正确：只有 code_context 明确说 "不存在" 时才报 error
+```
+
+### 2. 三层架构区分
+**注意区分三个层次的 API**：
+
+| 层次 | 示例 | 说明 |
+|------|------|------|
+| Service 方法 | `noteService.editTag()` | 在 `@/api/noteService.ts` 中定义 |
+| Hook 返回值 | `useTags()` 返回 `{ updateTag, deleteTag, ... }` | 在 Hook 的 return 中定义 |
+| 独立函数 | `voiceService.getTranscript()` | 在对应 Service 中定义 |
+
+**常见误报场景**：
+```typescript
+// ❌ 误报：editTag 是 noteService.editTag()，不是 useTags() 的返回值
+const { updateTag } = useTags();
+noteService.editTag(noteId, tagId, updates);  // 这是 noteService 的方法，不是 useTags 的
+
+// ✅ 正确：区分 Hook 返回值 vs Service 方法
+const { tags, updateTag } = useTags();  // updateTag 是 useTags 返回的
+noteService.editTag(noteId, tagId);       // editTag 是 noteService 的方法
+```
+
+### 3. 以编译结果为准
+**TypeScript 编译通过 = 导入有效**：
+- 如果 `npm run build` 没有报 "Cannot find module" 错误，说明所有导入都是有效的
+- 不要基于假设质疑有效的导入
+
+---
+
 ## 🔥🔥🔥 组件接口契约检查（必须执行）
 
 **如果 harness/components_schema.json 中包含组件定义，必须读取它来验证组件接口是否符合规范。**
@@ -203,6 +321,43 @@ import { useAuth } from "@/hooks/useAuth";      // useAuth 不存在（除非已
   "category": "type-consistency",
   "message": "字段名不一致：类型定义字段为 X，但代码中使用了 Y",
   "suggestion": "将 Y 改为 X（与 @/types/index.ts 保持一致）"
+}
+```
+
+### 11. 示例代码检测（必须执行）
+
+**检查是否包含遗留的示例代码**：
+```typescript
+// ❌ 示例代码 - 必须报告为 error
+export function Example() {
+  return <div>Example</div>;
+}
+
+// ❌ 示例代码 - 必须报告为 error
+export function xxx() {
+  return <div>xxx</div>;
+}
+
+// ❌ 示例代码 - 必须报告为 error
+export const example = "example";
+```
+
+**规则**：
+- 函数名包含 "Example"、"xxx"、"sample"、"demo" 等且只返回简单占位符 → error
+- 整个文件只有几行且功能不完整 → warning（提示需要完善）
+- 标记为 `// 示例代码` 或 `// 示例` 的文件 → error
+
+### 12. 编译错误反馈（必须执行）
+
+**当发现编译错误时，必须将错误信息反馈给 Coder 以便修复**：
+```json
+{
+  "file": "src/api/xxxService.ts",
+  "line": 3,
+  "severity": "error",
+  "category": "compilation",
+  "message": "TypeScript 编译错误: Unterminated regular expression literal",
+  "suggestion": "检查正则表达式语法是否正确，确保每个正则都有结束符 /"
 }
 ```
 
@@ -315,6 +470,14 @@ import { useAuth } from "@/hooks/useAuth";      // useAuth 不存在（除非已
 
 输出一个 JSON 对象：
 
+### 🔥 输出大小限制（必须遵守）
+
+- **issues 最多 5 条**：只列出最严重的 5 个问题
+- **每条 message 不超过 100 字**
+- **每条 suggestion 不超过 50 字**
+- **error 优先于 warning，warning 优先于 info**
+- 如果发现超过 5 个问题，只报告 severity 最高的前 5 个
+
 ```json
 {
   "passed": false,
@@ -353,15 +516,45 @@ import { useAuth } from "@/hooks/useAuth";      // useAuth 不存在（除非已
 }
 ```
 
+## 🔥🔥🔥 审查通过条件（核心规则）
+
+### ✅ 通过条件（passed: true）
+- `npm run build` 编译成功（无 TypeScript 错误）
+
+### ❌ 不通过条件（passed: false）
+- `npm run build` 编译失败（存在 TypeScript 错误）
+
+### 🔒 审查职责边界
+
+**只关注编译错误，其他都是 info/warning：**
+
+| 问题类型 | 严重性 | 是否阻止通过 |
+|----------|--------|-------------|
+| TypeScript 编译错误 | **error** | ✅ 阻止 |
+| 缺少 required_props | **error** | ✅ 阻止 |
+| 引用不存在的模块/图标 | **error** | ✅ 阻止 |
+| 未使用的导入 | warning | ❌ 不阻止 |
+| 代码风格问题 | warning/info | ❌ 不阻止 |
+| 命名建议 | info | ❌ 不阻止 |
+| 逻辑优化建议 | info | ❌ 不阻止 |
+| 性能优化建议 | info | ❌ 不阻止 |
+
+### 💡 审查策略
+
+1. **编译优先**：先检查 `npm run build` 结果
+2. **编译通过 = 通过**：只要编译成功，warning/info 级别问题不阻止
+3. **精准报告**：error 级别必须精确到文件和行号
+4. **不过度审查**：不报告不阻止通过的问题
+
+---
+
 ## 🔥🔥🔥 重要：问题严重性判定规则
 
 ### ❌ error 级别（阻止通过）：
-1. TypeScript 编译错误（类型不匹配、缺少字段）
+1. **TypeScript 编译错误**（类型不匹配、缺少字段、缺少导入）
 2. 引用不存在的模块/包/图标
 3. 字段名与 @/types/index.ts 定义不一致
 4. 组件缺少 required_props
-5. 异步函数没有 try/catch（如果需要）
-6. 严重的业务逻辑错误
 
 ### ⚠️ warning 级别（不阻止通过）：
 1. **未使用的导入**（除非 100% 确认）

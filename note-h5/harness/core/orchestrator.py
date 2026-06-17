@@ -15,7 +15,7 @@ import json
 import uuid
 import sys
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from datetime import datetime
 
 # 添加父目录到路径，以便导入 harness 模块
@@ -40,6 +40,10 @@ class Orchestrator:
         # 缓存最近的经验，避免每次都读取文件
         self._cached_lessons = None
         self._cached_lessons_text = ""
+
+        # 上下文裁剪相关
+        self._code_context_cache = {}  # 文件路径 -> 代码内容缓存
+        self._import_graph = {}  # 导入关系图
 
     def _load_recent_lessons(self) -> str:
         """加载最近的 5 条经验教训，拼接为 prompt 可用的文本"""
@@ -74,6 +78,214 @@ class Orchestrator:
         self._cached_lessons_text = lessons_text
         return lessons_text
 
+    def _load_relevant_lessons(self, task_keywords: List[str]) -> str:
+        """根据任务关键词加载相关的经验教训
+
+        Args:
+            task_keywords: 从任务描述中提取的关键词列表
+
+        Returns:
+            相关的经验教训文本
+        """
+        memory_dir = self.memory_store.memory_dir
+        lesson_files = sorted(
+            memory_dir.glob("lessons-*.md"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+
+        if not lesson_files:
+            return ""
+
+        # 按关键词匹配度排序
+        scored_lessons = []
+        for lesson_file in lesson_files:
+            content = lesson_file.read_text(encoding="utf-8")
+            content_lower = content.lower()
+
+            # 计算匹配分数
+            score = 0
+            matched_keywords = []
+            for keyword in task_keywords:
+                keyword_lower = keyword.lower()
+                if keyword_lower in content_lower:
+                    score += 1
+                    matched_keywords.append(keyword)
+
+            if score > 0:
+                # 提取关键行
+                lines = content.split('\n')
+                key_lines = []
+                for line in lines:
+                    if line.startswith('# ') or line.startswith('## '):
+                        key_lines.append(line)
+                    elif any(kw in line for kw in matched_keywords):
+                        key_lines.append(line.strip()[:100])
+
+                scored_lessons.append({
+                    "file": lesson_file.name,
+                    "score": score,
+                    "content": '\n'.join(key_lines[:10])
+                })
+
+        if not scored_lessons:
+            return ""
+
+        # 返回匹配度最高的前3条
+        scored_lessons.sort(key=lambda x: x["score"], reverse=True)
+        top_lessons = scored_lessons[:3]
+
+        lessons_text = "\n\n## 🔥 相关历史经验\n\n"
+        for i, lesson in enumerate(top_lessons, 1):
+            lessons_text += f"### 相关经验 {i} (匹配度: {lesson['score']})\n"
+            lessons_text += lesson["content"] + "\n\n"
+
+        return lessons_text
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        """从文本中提取关键词
+
+        Args:
+            text: 输入文本（任务描述等）
+
+        Returns:
+            关键词列表
+        """
+        import re
+
+        # 提取英文单词（组件名、类型名等）
+        english_words = re.findall(r'[A-Z][a-z]+|[A-Z]{2,}', text)
+
+        # 提取中文词组
+        chinese_words = re.findall(r'[\u4e00-\u9fff]{2,}', text)
+
+        # 提取文件名相关的词
+        file_patterns = re.findall(r'src/(\w+)', text)
+
+        # 合并并去重
+        keywords = list(set(english_words + chinese_words + file_patterns))
+
+        # 过滤太短和无意义的词
+        filtered = [k for k in keywords if len(k) >= 2]
+
+        return filtered
+
+    def _build_import_graph(self) -> Dict[str, Set[str]]:
+        """构建导入关系图
+
+        Returns:
+            {文件路径: 被导入的文件路径集合}
+        """
+        if self._import_graph:
+            return self._import_graph
+
+        import re
+
+        src_dir = self.base_dir / "src"
+        if not src_dir.exists():
+            return {}
+
+        graph = {}
+
+        for ts_file in src_dir.rglob("*.ts"):
+            rel_path = str(ts_file.relative_to(self.base_dir))
+            imports = set()
+
+            try:
+                content = ts_file.read_text(encoding="utf-8")
+                # 匹配 import from '@/...' 模式
+                matches = re.findall(r'from\s+["\']@/([^"\']+)["\']', content)
+                imports = set(matches)
+            except Exception:
+                pass
+
+            graph[rel_path] = imports
+
+        self._import_graph = graph
+        return graph
+
+    def _get_related_files(self, file_path: str) -> List[str]:
+        """获取与目标文件相关的所有文件（通过导入关系）
+
+        Args:
+            file_path: 目标文件路径
+
+        Returns:
+            相关文件列表（包括目标文件本身）
+        """
+        graph = self._build_import_graph()
+
+        if file_path not in graph:
+            # 尝试查找相似的文件名
+            file_base = Path(file_path).stem.lower()
+            for key in graph:
+                if Path(key).stem.lower() == file_base:
+                    file_path = key
+                    break
+
+        # 使用 BFS 查找相关文件
+        related = {file_path}
+        queue = [file_path]
+
+        while queue:
+            current = queue.pop(0)
+            if current not in graph:
+                continue
+
+            # 查找导入 current 的文件
+            for other_file, imports in graph.items():
+                if current in imports and other_file not in related:
+                    related.add(other_file)
+                    queue.append(other_file)
+
+            # 查找 current 导入的文件
+            for imported in graph.get(current, []):
+                # 构造可能的文件路径
+                possible_paths = [
+                    f"src/{imported}.ts",
+                    f"src/{imported}.tsx",
+                    f"src/{imported}/index.ts",
+                ]
+                for pp in possible_paths:
+                    if pp not in related:
+                        related.add(pp)
+                        queue.append(pp)
+
+        return list(related)
+
+    def _get_relevant_code_snippets(self, file_path: str) -> str:
+        """获取与目标文件相关的代码片段
+
+        Args:
+            file_path: 目标文件路径
+
+        Returns:
+            相关代码片段文本
+        """
+        related_files = self._get_related_files(file_path)
+
+        if not related_files:
+            return ""
+
+        snippets = ["\n\n## 📁 相关代码文件\n"]
+
+        for rel_path in related_files[:10]:  # 限制数量
+            full_path = self.base_dir / rel_path
+            if not full_path.exists():
+                continue
+
+            try:
+                content = full_path.read_text(encoding="utf-8")
+                # 限制每个文件的长度
+                if len(content) > 500:
+                    content = content[:500] + "\n... (truncated)"
+
+                snippets.append(f"\n### {rel_path}\n```typescript\n{content}\n```\n")
+            except Exception:
+                pass
+
+        return '\n'.join(snippets)
+
     def invalidate_lessons_cache(self):
         """使经验缓存失效（新保存经验后调用）"""
         self._cached_lessons_text = ""
@@ -87,23 +299,37 @@ class Orchestrator:
         )
         return task
 
-    def get_planner_prompt(self) -> str:
-        """获取 Planner Agent 系统提示词"""
+    def get_planner_prompt(self, task_description: str = "") -> str:
+        """获取 Planner Agent 系统提示词
+
+        Args:
+            task_description: 任务描述，用于裁剪相关上下文
+        """
         prompt_file = self.prompts_dir / "planner_system.txt"
         if prompt_file.exists():
             prompt = prompt_file.read_text(encoding="utf-8")
         else:
             prompt = ""
 
-        # 注入历史经验
-        lessons = self._load_recent_lessons()
+        # 注入相关历史经验（按关键词匹配）
+        if task_description:
+            keywords = self._extract_keywords(task_description)
+            lessons = self._load_relevant_lessons(keywords)
+        else:
+            lessons = self._load_recent_lessons()
+
         if lessons:
             prompt += lessons
 
         return prompt
 
-    def get_coder_prompt(self) -> str:
-        """获取 Coder Agent 系统提示词"""
+    def get_coder_prompt(self, target_file: str = "", task_description: str = "") -> str:
+        """获取 Coder Agent 系统提示词
+
+        Args:
+            target_file: 目标文件路径，用于裁剪相关代码
+            task_description: 任务描述，用于裁剪相关经验
+        """
         prompt_file = self.prompts_dir / "coder_system.txt"
         if prompt_file.exists():
             prompt = prompt_file.read_text(encoding="utf-8")
@@ -119,23 +345,43 @@ class Orchestrator:
             else:
                 prompt += "\n\n## 📋 组件 Schema 定义\n\n```json\n" + schema_content + "\n```"
 
-        # 注入历史经验
-        lessons = self._load_recent_lessons()
+        # 注入相关代码片段（基于目标文件）
+        if target_file:
+            relevant_snippets = self._get_relevant_code_snippets(target_file)
+            if relevant_snippets:
+                prompt += relevant_snippets
+
+        # 注入相关历史经验（按关键词匹配）
+        if task_description:
+            keywords = self._extract_keywords(task_description)
+            lessons = self._load_relevant_lessons(keywords)
+        else:
+            lessons = self._load_recent_lessons()
+
         if lessons:
             prompt += lessons
 
         return prompt
 
-    def get_reviewer_prompt(self) -> str:
-        """获取 Reviewer Agent 系统提示词"""
+    def get_reviewer_prompt(self, task_description: str = "") -> str:
+        """获取 Reviewer Agent 系统提示词
+
+        Args:
+            task_description: 任务描述，用于裁剪相关上下文
+        """
         prompt_file = self.prompts_dir / "reviewer_system.txt"
         if prompt_file.exists():
             prompt = prompt_file.read_text(encoding="utf-8")
         else:
             prompt = ""
 
-        # 注入历史经验
-        lessons = self._load_recent_lessons()
+        # 注入相关历史经验（按关键词匹配）
+        if task_description:
+            keywords = self._extract_keywords(task_description)
+            lessons = self._load_relevant_lessons(keywords)
+        else:
+            lessons = self._load_recent_lessons()
+
         if lessons:
             prompt += lessons
 

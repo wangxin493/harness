@@ -9,7 +9,7 @@ module.exports = {
     clean: true
   },
   resolve: {
-    extensions: ['.tsx', '.ts', '.js'],
+    extensions: ['.tsx', '.ts', '.js', '.jsx'],
     alias: {
       '@': path.resolve(__dirname, 'src')
     }
@@ -24,29 +24,18 @@ module.exports = {
       {
         test: /\.css$/,
         use: ['style-loader', 'css-loader']
-      },
-      {
-        test: /\.(png|jpg|jpeg|gif|svg)$/i,
-        type: 'asset/resource'
       }
     ]
   },
   plugins: [
     new HtmlWebpackPlugin({
-      template: './public/index.html',
-      filename: 'index.html'
+      template: './public/index.html'
     })
   ],
   devServer: {
-    static: {
-      directory: path.join(__dirname, 'public')
-    },
-    compress: true,
-    port: 3000,
-    host: '0.0.0.0',
+    static: './dist',
     hot: true,
-    open: false,
+    port: 3000,
     historyApiFallback: true
-  },
-  devtool: 'eval-source-map'
+  }
 };
