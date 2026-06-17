@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Harness 2.0 CLI 启动器
+# 优先使用 .harness/.venv/bin/python3，回退到系统 python3。
+set -euo pipefail
+
+# 解析 commands/harness 所在目录 → harness root（即 .harness）
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HARNESS_DIR="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+VENV_PY="$HARNESS_DIR/.venv/bin/python3"
+if [ -x "$VENV_PY" ]; then
+    PY="$VENV_PY"
+else
+    PY="$(command -v python3 || true)"
+    if [ -z "$PY" ]; then
+        echo "harness: 找不到可用的 python3（也未发现 .harness/.venv/bin/python3）" >&2
+        exit 127
+    fi
+fi
+
+# 让 `import lib.xxx` 可用
+export PYTHONPATH="$HARNESS_DIR:${PYTHONPATH:-}"
+
+exec "$PY" "$HARNESS_DIR/lib/cli.py" "$@"

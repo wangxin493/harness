@@ -1,0 +1,17 @@
+# 扫描产物与运行时缓存（按需提交可去掉对应行）
+context/validation-cache/
+context/scan-metadata.json
+context/project-context.json
+context/dependency-graph.json
+generated/
+memory/lessons/
+mode-config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 环境
+.venv/
+venv/

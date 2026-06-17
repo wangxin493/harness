@@ -1,0 +1,84 @@
+# Harness 2.0 规则配置（默认值，可被项目级覆盖）
+
+# 验证配置
+validation:
+  timeout:
+    quick_check: 10s
+    full_check: 60s
+  dynamic_timeout:
+    enabled: true
+    rules:
+      - max_lines: 100
+        timeout: 30s
+      - max_lines: 500
+        timeout: 60s
+      - max_lines: null
+        timeout: 120s
+
+# 三层架构规则
+# scanner / validator 用 paths 判定 layer；layers 顺序即匹配优先级
+architecture:
+  layers:
+    - name: component
+      paths: ["src/pages/", "src/components/"]
+      can_import: ["hook", "service", "type"]
+    - name: hook
+      paths: ["src/hooks/"]
+      can_import: ["service", "type"]
+    - name: service
+      paths: ["src/api/"]
+      can_import: ["type"]
+    - name: type
+      paths: ["src/types/"]
+      can_import: []
+
+# 命名规范（验证器使用）
+naming:
+  component: PascalCase
+  hook: camelCase-with-use-prefix
+  service: camelCase-with-Service-suffix
+  type: PascalCase
+
+# 导入规则
+imports:
+  allowed_prefixes:
+    - "@/types"
+    - "@/hooks"
+    - "@/api"
+    - "@/pages"
+    - "@/components"
+  forbidden_imports:
+    - "@/services"      # 历史误用，应使用 @/api
+    - "@/api/mockApi"   # 不允许直接耦合 mock 实现
+
+# 扫描器配置
+scanner:
+  source_root: "src"
+  include_extensions: [".ts", ".tsx", ".d.ts"]
+  exclude_globs:
+    - "**/*.test.ts"
+    - "**/*.test.tsx"
+    - "**/*.spec.ts"
+    - "**/*.spec.tsx"
+    - "**/__tests__/**"
+    - "**/__mocks__/**"
+  exclude_dirs:
+    - "node_modules"
+    - "dist"
+    - "build"
+    - ".git"
+    - ".harness"
+    - ".harness-shared"
+    - "_archived_harness_1.x"
+
+# 治理模式默认值
+governance:
+  default_mode: strict
+
+# 经验市场配置
+experience_market:
+  enabled: true
+  auto_pull: true
+  auto_push: false
+  max_lessons: 10
+  min_score: 0.3
