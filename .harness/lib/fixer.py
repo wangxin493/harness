@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Harness 2.0 修复器（P1 #7）—— lib/fixer.py
+
+P1 范围（与执行清单一致）：
+- 仅对 `rule_id == "import-forbidden"` 出 unified diff patch
+  - 内置可机械替换的映射（如 `@/services/X` → `@/api/X`）
+  - 无映射的（如 `@/api/mockApi/...`）只出 instruction，不出 patch
+- 架构错误（`arch-*-import`）只出 instruction，不出 patch（重构语义机器无法保真）
+- 默认 dry-run：把 patch 与 instructions 返回，不动文件
+- `--apply`：
+  - 非 git 仓库 → 拒绝（exit 3）
+  - git 仓库 → 用 `git stash create` + `git stash store` 默默留备份（不动工作树），
+    再用 `git apply` 应用 patch；apply 是原子的，失败时工作树不变
+- fixer 不动 `.harness/context/`（依赖图唯一生产者是 scanner）
+
+P2 才会做：
+- 架构错误的半自动 codemod（基于 jscodeshift / ts-morph）
+- 经验市场 lesson 命中后的自动应用
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import difflib
+import re
+import subprocess
+import tempfile
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from lib.validator import CodeValidator, Issue
+
+
+# ---------------------------------------------------------------------------
+# 数据结构
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FilePatch:
+    """单文件的 unified diff。"""
+
+    file: str            # POSIX 相对路径
+    diff: str            # 完整 unified diff（含 --- a/ +++ b/ 头）
+    rule_ids: List[str] = field(default_factory=list)  # 这个 patch 修复了哪些 rule
+
+
+@dataclass
+class FixInstruction:
+    """无法机械修复的人读指令。"""
+
+    rule_id: str
+    file: str
+    line: Optional[int]
+    message: str
+    suggestion: str
+
+
+@dataclass
+class FixResult:
+    """fix 结果。"""
+
+    patches: List[FilePatch] = field(default_factory=list)
+    instructions: List[FixInstruction] = field(default_factory=list)
+    applied: bool = False
+    stash_ref: Optional[str] = None  # 备份 stash 的 commit sha（--apply 时）
+
+
+# ---------------------------------------------------------------------------
+# 修复器
+# ---------------------------------------------------------------------------
+
+
+class Fixer:
+    """P1 最小修复器：只处理 import-forbidden 中可机械替换的子集。"""
+
+    # 可机械替换的 forbidden 映射（前缀替换）。
+    # key 末尾不带 "/"；命中条件：source == key 或 source.startswith(key + "/")
+    _FORBIDDEN_REWRITES: Dict[str, str] = {
+        "@/services": "@/api",
+        # @/api/mockApi 故意不在此处：替换目标依赖具体业务，机器决定不了
+    }
+
+    def __init__(
+        self,
+        project_dir: Path,
+        validator: Optional[CodeValidator] = None,
+    ) -> None:
+        self.project_dir = Path(project_dir).resolve()
+        self.validator = validator or CodeValidator(project_dir=self.project_dir)
+
+    # -- 公共 API -----------------------------------------------------------
+
+    def fix_file(self, rel_path: str, apply: bool = False) -> FixResult:
+        """对单文件生成（并可选应用）修复。
+
+        默认 dry-run：返回 patches + instructions，不动磁盘。
+        apply=True：要求当前在 git 仓库，应用前用 stash create/store 留备份。
+        """
+        result = FixResult()
+        issues = self.validator.validate_file(rel_path)
+        if not issues:
+            return result
+
+        patch = self._build_patch_for_file(rel_path, issues)
+        if patch is not None:
+            result.patches.append(patch)
+
+        # 所有未被 patch 覆盖的 issue → 出 instruction
+        covered_lines = self._covered_import_lines(issues, patch)
+        for issue in issues:
+            if self._is_covered_by_patch(issue, covered_lines):
+                continue
+            if issue.category == "parse":
+                # 解析错误不属于 fixer 职责（让用户自己看 validator 输出）
+                continue
+            result.instructions.append(FixInstruction(
+                rule_id=issue.rule_id,
+                file=issue.file,
+                line=issue.line,
+                message=issue.message,
+                suggestion=issue.suggestion or "",
+            ))
+
+        if apply and result.patches:
+            self._apply_patches(result)
+
+        return result
+
+    # -- patch 生成 ----------------------------------------------------------
+
+    def _build_patch_for_file(
+        self, rel_path: str, issues: List[Issue]
+    ) -> Optional[FilePatch]:
+        """对单文件聚合所有 import-forbidden 替换，生成一个 unified diff。"""
+        forbidden = [i for i in issues if i.rule_id == "import-forbidden"]
+        if not forbidden:
+            return None
+
+        abs_path = self.project_dir / rel_path
+        try:
+            original = abs_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+        new_text, applied_rules, applied_lines = self._rewrite_forbidden_imports(
+            original, forbidden
+        )
+        if new_text == original or not applied_lines:
+            return None  # 无可机械替换的 forbidden（如 mockApi）
+
+        diff = "".join(difflib.unified_diff(
+            original.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=f"a/{rel_path}",
+            tofile=f"b/{rel_path}",
+            n=3,
+        ))
+        return FilePatch(
+            file=rel_path,
+            diff=diff,
+            rule_ids=applied_rules,
+        )
+
+    def _rewrite_forbidden_imports(
+        self, source: str, forbidden_issues: List[Issue]
+    ) -> Tuple[str, List[str], List[int]]:
+        """逐行替换可机械修复的 forbidden import。
+
+        策略：只替换被 validator 标记为 import-forbidden 的行号上、
+        且原始 import source 命中 _FORBIDDEN_REWRITES 前缀的，避免误伤。
+        """
+        lines = source.splitlines(keepends=True)
+        applied_rules: List[str] = []
+        applied_lines: List[int] = []
+        targeted = {i.line for i in forbidden_issues if i.line is not None}
+
+        for idx, line in enumerate(lines):
+            line_no = idx + 1
+            if line_no not in targeted:
+                continue
+            new_line = self._rewrite_import_line(line)
+            if new_line is not None and new_line != line:
+                lines[idx] = new_line
+                applied_rules.append("import-forbidden")
+                applied_lines.append(line_no)
+
+        return "".join(lines), applied_rules, applied_lines
+
+    @classmethod
+    def _rewrite_import_line(cls, line: str) -> Optional[str]:
+        """对单行做前缀替换。命中第一个适用的 rewrite 规则就返回。"""
+        # 匹配 import/export 行里的字符串字面量（单引号或双引号）
+        # 这里不试图解析 AST：fix 只动我们自己生成的字面量片段，不动语法结构。
+        pattern = re.compile(r"""(['"])([^'"]+)\1""")
+
+        def _replace(match: "re.Match[str]") -> str:
+            quote = match.group(1)
+            src = match.group(2)
+            for prefix, replacement in cls._FORBIDDEN_REWRITES.items():
+                if src == prefix:
+                    return f"{quote}{replacement}{quote}"
+                if src.startswith(prefix + "/"):
+                    rest = src[len(prefix):]
+                    return f"{quote}{replacement}{rest}{quote}"
+            return match.group(0)
+
+        new_line = pattern.sub(_replace, line)
+        return new_line if new_line != line else None
+
+    # -- patch 覆盖判定 ------------------------------------------------------
+
+    @staticmethod
+    def _covered_import_lines(
+        issues: List[Issue], patch: Optional[FilePatch]
+    ) -> set:
+        """返回被 patch 覆盖的 (rule_id, line) 集合。"""
+        if patch is None:
+            return set()
+        return {
+            (i.rule_id, i.line)
+            for i in issues
+            if i.rule_id == "import-forbidden"
+            and i.line is not None
+            and Fixer._line_appears_in_diff(patch.diff, i.line)
+        }
+
+    @staticmethod
+    def _line_appears_in_diff(diff: str, line_no: int) -> bool:
+        """diff hunk 头形如 `@@ -a,b +c,d @@`；line_no 落在 [a, a+b) 区间即视为覆盖。"""
+        for match in re.finditer(r"@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", diff):
+            start = int(match.group(1))
+            length = int(match.group(2) or "1")
+            if start <= line_no < start + length:
+                return True
+        return False
+
+    @staticmethod
+    def _is_covered_by_patch(issue: Issue, covered: set) -> bool:
+        if issue.rule_id != "import-forbidden":
+            return False
+        return (issue.rule_id, issue.line) in covered
+
+    # -- apply ---------------------------------------------------------------
+
+    def _apply_patches(self, result: FixResult) -> None:
+        """非 git 仓库 → 抛 RuntimeError；git 仓库 → stash 备份 + git apply。"""
+        if not self._is_git_repo():
+            raise RuntimeError(
+                "harness fix --apply 拒绝执行：当前目录不是 git 仓库。"
+                "请先 git init 或在 git 仓库内运行。"
+            )
+
+        result.stash_ref = self._stash_backup()
+
+        for patch in result.patches:
+            self._git_apply(patch.diff)
+
+        result.applied = True
+
+    def _is_git_repo(self) -> bool:
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                cwd=self.project_dir,
+                check=True,
+                capture_output=True,
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    def _stash_backup(self) -> Optional[str]:
+        """用 git stash create + store 默默留备份（不动工作树）。
+
+        工作树 clean → stash create 输出空 → 不 store，返回 None。
+        """
+        ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        created = subprocess.run(
+            ["git", "stash", "create"],
+            cwd=self.project_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        sha = created.stdout.strip()
+        if not sha:
+            return None  # 工作树干净，无需备份
+        subprocess.run(
+            ["git", "stash", "store", "-m", f"harness-fix-backup-{ts}", sha],
+            cwd=self.project_dir,
+            check=True,
+            capture_output=True,
+        )
+        return sha
+
+    def _git_apply(self, diff: str) -> None:
+        """git apply 一个 unified diff（原子：失败时工作树不变）。"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".patch", delete=False, encoding="utf-8"
+        ) as fp:
+            fp.write(diff)
+            patch_path = fp.name
+        try:
+            subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", patch_path],
+                cwd=self.project_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"git apply 失败: {exc.stderr.strip() or exc.stdout.strip() or exc}"
+            ) from exc
+        finally:
+            Path(patch_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# 便捷函数（CLI 用）
+# ---------------------------------------------------------------------------
+
+
+def fix_file_to_dict(
+    file_path: str,
+    project_dir: Optional[Path] = None,
+    apply: bool = False,
+) -> Dict:
+    """供 CLI 使用的便捷入口：返回 JSON 友好的 dict。"""
+    fixer = Fixer(project_dir or Path.cwd())
+    result = fixer.fix_file(file_path, apply=apply)
+    return {
+        "patches": [asdict(p) for p in result.patches],
+        "instructions": [asdict(i) for i in result.instructions],
+        "applied": result.applied,
+        "stash_ref": result.stash_ref,
+    }

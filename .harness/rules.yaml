@@ -14,6 +14,8 @@ validation:
         timeout: 60s
       - max_lines: null
         timeout: 120s
+  # P1 #11：人读输出最多展示几条 issue（--json 始终完整不截断）
+  max_issues_per_file: 5
 
 # 三层架构规则
 # scanner / validator 用 paths 判定 layer；layers 顺序即匹配优先级
