@@ -471,7 +471,8 @@ def lesson_add(title, content, category, severity, keywords, applies_to,
                f"{market.local_dir / (lesson.id + '.md')}")
     click.echo("💡 下一步：跑 `harness scan` 刷新 generated/*.md；")
     click.echo("   当前 Agent 会话不会感知到这条新经验（系统提示词为启动时快照），")
-    click.echo("   需重启会话，或在会话内用 `/recall` 命令实时召回。")
+    click.echo("   需重启会话；或在会话内让 Agent 实时读取生成文档来召回，例如：")
+    click.echo("   「读 .harness/generated/claude.md 的『团队经验教训』段，列出全部条目」")
 
 
 @lesson_group.command("remove")
