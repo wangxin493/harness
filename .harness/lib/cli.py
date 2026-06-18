@@ -29,9 +29,15 @@ from lib.adapter import Generator  # noqa: E402
 from lib.doctor import Doctor, plan_upgrade  # noqa: E402
 from lib.experience_market import ExperienceMarket  # noqa: E402
 from lib.fixer import Fixer  # noqa: E402
+from lib.installer import get_installer  # noqa: E402
 from lib.mode_manager import GovernanceMode, ModeManager, ValidationContext  # noqa: E402
 from lib.scanner import IncrementalScanner  # noqa: E402
 from lib.validator import CodeValidator  # noqa: E402
+
+
+# 当前支持的 agent 集合（installer 注册表的对外白名单）。
+# claude / ducc / baidu-cc 共用 Claude Code 协议，复用同一 installer。
+_SUPPORTED_AGENTS = ["claude", "ducc", "baidu-cc"]
 
 
 def _resolve_project_dir() -> Path:
@@ -593,6 +599,93 @@ def upgrade_cmd(as_json: bool) -> None:
     click.echo("    计划：")
     for item in report.planned:
         click.echo(f"     - {item}")
+
+
+# -- install / uninstall ---------------------------------------------------
+
+
+_ACTION_BADGES = {
+    "created":   "🆕",
+    "updated":   "✏️ ",
+    "unchanged": "⏸️ ",
+    "removed":   "🗑️ ",
+}
+
+
+def _print_install_changes(result, project_dir: Path) -> None:
+    for c in result.changes:
+        rel = _format_relative(c.path, project_dir)
+        badge = _ACTION_BADGES.get(c.action, "•")
+        suffix = f" — {c.detail}" if c.detail else ""
+        click.echo(f"   {badge} [{c.action}] {rel}{suffix}")
+
+
+def _format_relative(path: Path, project_dir: Path) -> str:
+    try:
+        return str(Path(path).relative_to(project_dir))
+    except ValueError:
+        return str(path)
+
+
+@cli.command("install")
+@click.option("--agent", "agent", default="claude", show_default=True,
+              type=click.Choice(_SUPPORTED_AGENTS),
+              help="目标 Agent（claude/ducc/baidu-cc 共用同一套 hook 协议）")
+@click.option("--dry-run", is_flag=True,
+              help="仅打印将要做的改动，不写盘")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出操作记录")
+def install_cmd(agent: str, dry_run: bool, as_json: bool) -> None:
+    """把 harness 接到 Agent：注册 PostToolUse hook + 注入 CLAUDE.md 引用。
+
+    幂等：可反复执行；已有的 harness hook / CLAUDE.md 托管块会被识别后更新。
+    不破坏：第三方已注册的其它 hook（如 baidu-cc 自带的 data-report）原样保留。
+    """
+    project_dir = _resolve_project_dir()
+    installer = get_installer(agent, project_dir)
+    result = installer.install(dry_run=dry_run)
+
+    if as_json:
+        click.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return
+
+    title = f"🔌 Harness install ({agent})" + ("  [dry-run]" if dry_run else "")
+    click.echo(title)
+    _print_install_changes(result, project_dir)
+
+    if dry_run:
+        click.echo("\nℹ️  dry-run；未写盘。去掉 --dry-run 真正落盘。")
+    else:
+        click.echo("\n✅ 安装完成。")
+        click.echo("   下一步：")
+        click.echo("   1) 跑 `harness scan` 生成 .harness/generated/claude.md")
+        click.echo("   2) 重启 / 重新打开 Agent 让其重新读 .claude/settings.json")
+        click.echo("   3) 让 Agent 编辑 src/ 下的 .ts/.tsx 文件，违规会被自动拦截")
+
+
+@cli.command("uninstall")
+@click.option("--agent", "agent", default="claude", show_default=True,
+              type=click.Choice(_SUPPORTED_AGENTS),
+              help="目标 Agent")
+@click.option("--dry-run", is_flag=True, help="仅打印将要做的改动，不写盘")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出操作记录")
+def uninstall_cmd(agent: str, dry_run: bool, as_json: bool) -> None:
+    """卸载 harness 与 Agent 的对接（仅移除 harness 自己装的部分）。"""
+    project_dir = _resolve_project_dir()
+    installer = get_installer(agent, project_dir)
+    result = installer.uninstall(dry_run=dry_run)
+
+    if as_json:
+        click.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return
+
+    title = f"🔌 Harness uninstall ({agent})" + ("  [dry-run]" if dry_run else "")
+    click.echo(title)
+    _print_install_changes(result, project_dir)
+
+    if dry_run:
+        click.echo("\nℹ️  dry-run；未写盘。去掉 --dry-run 真正落盘。")
+    else:
+        click.echo("\n✅ 卸载完成（其它 Agent 自带的 hook 已原样保留）。")
 
 
 if __name__ == "__main__":
