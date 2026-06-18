@@ -469,6 +469,9 @@ def lesson_add(title, content, category, severity, keywords, applies_to,
         return
     click.echo(f"✅ 已新增 lesson [{lesson.id}] → "
                f"{market.local_dir / (lesson.id + '.md')}")
+    click.echo("💡 下一步：跑 `harness scan` 刷新 generated/*.md；")
+    click.echo("   当前 Agent 会话不会感知到这条新经验（系统提示词为启动时快照），")
+    click.echo("   需重启会话，或在会话内用 `/recall` 命令实时召回。")
 
 
 @lesson_group.command("remove")
