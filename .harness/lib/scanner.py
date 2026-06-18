@@ -363,10 +363,8 @@ class IncrementalScanner:
 
     def _probe_module_candidates(self, base: Path) -> Optional[str]:
         """按 .ts → .tsx → .d.ts → /index.ts → /index.tsx → /index.d.ts 顺序探测。"""
-        # 1) base + ext
+        # 1) base + ext —— 用字符串拼接避免 with_suffix 在 .d 已存在时丢后缀
         for ext in self._CANDIDATE_SUFFIXES:
-            candidate = base.with_suffix(base.suffix + ext) if base.suffix else Path(str(base) + ext)
-            # with_suffix 在已有后缀（如 .d）时会丢失，统一用字符串拼接
             candidate = Path(str(base) + ext)
             if candidate.is_file():
                 return self._to_project_rel(candidate)

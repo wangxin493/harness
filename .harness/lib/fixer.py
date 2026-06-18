@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from lib.validator import CodeValidator, Issue
 
@@ -103,14 +103,15 @@ class Fixer:
         if not issues:
             return result
 
-        patch = self._build_patch_for_file(rel_path, issues)
+        patch, applied_lines = self._build_patch_for_file(rel_path, issues)
         if patch is not None:
             result.patches.append(patch)
 
-        # 所有未被 patch 覆盖的 issue → 出 instruction
-        covered_lines = self._covered_import_lines(issues, patch)
+        # 所有未被 patch 实际改写的 issue → 出 instruction。
+        # 这里的"覆盖判定"用 _rewrite_forbidden_imports 真实改写过的行号集合，
+        # 而不是 diff hunk 区间，避免 unified_diff(n=3) 上下文行被误算成 "已修复"。
         for issue in issues:
-            if self._is_covered_by_patch(issue, covered_lines):
+            if self._is_covered_by_patch(issue, applied_lines):
                 continue
             if issue.category == "parse":
                 # 解析错误不属于 fixer 职责（让用户自己看 validator 输出）
@@ -132,23 +133,27 @@ class Fixer:
 
     def _build_patch_for_file(
         self, rel_path: str, issues: List[Issue]
-    ) -> Optional[FilePatch]:
-        """对单文件聚合所有 import-forbidden 替换，生成一个 unified diff。"""
+    ) -> Tuple[Optional[FilePatch], Set[int]]:
+        """对单文件聚合所有 import-forbidden 替换，生成一个 unified diff。
+
+        返回 (FilePatch | None, 实际被改写的 1-indexed 行号集合)。
+        行号集合用于 fix_file 决定哪些 issue 已被 patch 真实修复。
+        """
         forbidden = [i for i in issues if i.rule_id == "import-forbidden"]
         if not forbidden:
-            return None
+            return None, set()
 
         abs_path = self.project_dir / rel_path
         try:
             original = abs_path.read_text(encoding="utf-8")
         except OSError:
-            return None
+            return None, set()
 
         new_text, applied_rules, applied_lines = self._rewrite_forbidden_imports(
             original, forbidden
         )
         if new_text == original or not applied_lines:
-            return None  # 无可机械替换的 forbidden（如 mockApi）
+            return None, set()  # 无可机械替换的 forbidden（如 mockApi）
 
         diff = "".join(difflib.unified_diff(
             original.splitlines(keepends=True),
@@ -157,10 +162,9 @@ class Fixer:
             tofile=f"b/{rel_path}",
             n=3,
         ))
-        return FilePatch(
-            file=rel_path,
-            diff=diff,
-            rule_ids=applied_rules,
+        return (
+            FilePatch(file=rel_path, diff=diff, rule_ids=applied_rules),
+            set(applied_lines),
         )
 
     def _rewrite_forbidden_imports(
@@ -212,35 +216,17 @@ class Fixer:
     # -- patch 覆盖判定 ------------------------------------------------------
 
     @staticmethod
-    def _covered_import_lines(
-        issues: List[Issue], patch: Optional[FilePatch]
-    ) -> set:
-        """返回被 patch 覆盖的 (rule_id, line) 集合。"""
-        if patch is None:
-            return set()
-        return {
-            (i.rule_id, i.line)
-            for i in issues
-            if i.rule_id == "import-forbidden"
-            and i.line is not None
-            and Fixer._line_appears_in_diff(patch.diff, i.line)
-        }
+    def _is_covered_by_patch(issue: Issue, applied_lines: Set[int]) -> bool:
+        """issue 是否被 patch 真实改写过。
 
-    @staticmethod
-    def _line_appears_in_diff(diff: str, line_no: int) -> bool:
-        """diff hunk 头形如 `@@ -a,b +c,d @@`；line_no 落在 [a, a+b) 区间即视为覆盖。"""
-        for match in re.finditer(r"@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", diff):
-            start = int(match.group(1))
-            length = int(match.group(2) or "1")
-            if start <= line_no < start + length:
-                return True
-        return False
-
-    @staticmethod
-    def _is_covered_by_patch(issue: Issue, covered: set) -> bool:
+        只有 import-forbidden 规则才会被 fixer 出 patch，因此其它规则一律返回
+        False（让它们走 instruction 路径）。
+        """
         if issue.rule_id != "import-forbidden":
             return False
-        return (issue.rule_id, issue.line) in covered
+        if issue.line is None:
+            return False
+        return issue.line in applied_lines
 
     # -- apply ---------------------------------------------------------------
 

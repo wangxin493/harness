@@ -135,6 +135,28 @@ class TestFixer(unittest.TestCase):
         rule_ids = [i.rule_id for i in result.instructions]
         self.assertIn("import-forbidden", rule_ids)
 
+    def test_mockapi_within_services_hunk_still_instruction(self):
+        """回归：mockApi 行紧挨 services 行时也必须出 instruction。
+
+        早期实现用 unified_diff hunk 区间（含 n=3 上下文）判断 covered，
+        会把 @/api/mockApi 误算成"已被 patch 修复"，于是 instructions 漏掉它。
+        现在 covered 改用真实改写过的行号集合，这种相邻情形必须仍出 instruction。
+        """
+        self.fx.write(
+            "src/api/messy.ts",
+            "import { a } from '@/services/legacy';\n"
+            "import { b } from '@/api/mockApi/foo';\n"
+            "export const x = a;\n",
+        )
+        result = self.fx.fixer().fix_file("src/api/messy.ts")
+        # services 这条出 patch
+        self.assertEqual(len(result.patches), 1)
+        # mockApi 这条仍必须以 instruction 形式暴露
+        ins_lines = [(i.rule_id, i.line) for i in result.instructions
+                     if i.rule_id == "import-forbidden"]
+        self.assertEqual(ins_lines, [("import-forbidden", 2)],
+                         f"expected mockApi line 2 in instructions, got {ins_lines}")
+
     # ----------------------------------------------------------- 架构错误处理
 
     def test_arch_error_only_instruction_no_patch(self):

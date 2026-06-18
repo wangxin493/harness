@@ -77,7 +77,7 @@ DEFAULT_RULES: List[RuleConfig] = [
     RuleConfig("import-forbidden",  "import",        "error",   True,  True),
 
     # naming —— relaxed 不启用（这是 strict 才管的"风格洁癖")
-    # validator P0 还没产出 naming-*，留在这里给 P1 #11 用
+    # P0/P1 validator 还没产出 naming-* 规则；P2 接入命名规范检查后会用到。
     RuleConfig("naming-*",          "naming",        "warning", False, False),
 
     # type-safety —— relaxed 仍拦截（类型问题往往是真 bug）

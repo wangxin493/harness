@@ -63,9 +63,15 @@ case "$FILE_PATH" in
     *)                REL_PATH="$FILE_PATH" ;;
 esac
 
-# 仅 src/*.ts / *.tsx / *.d.ts
+# 仅 src/ 下的 .ts / .tsx / .d.ts —— 用前缀 + 后缀两次 case 匹配，
+# 避免依赖 `src/**/*.ts` 这种 globstar 写法（bash case 模式默认不递归，
+# macOS 系统 bash 3.2 也没有 globstar，会让 src/components/Foo.ts 被静默放行）。
 case "$REL_PATH" in
-    src/*.ts|src/*.tsx|src/*.d.ts|src/**/*.ts|src/**/*.tsx|src/**/*.d.ts) : ;;
+    src/*) ;;
+    *) exit 0 ;;
+esac
+case "$REL_PATH" in
+    *.ts|*.tsx|*.d.ts) ;;
     *) exit 0 ;;
 esac
 

@@ -4,6 +4,8 @@
 P1 范围（与执行清单一致）：
 - 本地存储：.harness/memory/lessons/<id>.md（Markdown + YAML frontmatter，沿用设计文档 §4.2）
 - 共享目录：<project>/.harness-shared/lessons/<id>.md（团队 git 共享盘）
+  注：设计文档 §三 原写的是 .harness/memory/shared/，落地时迁到顶层 .harness-shared/
+  方便挂载 git submodule / NFS；二者只能存在其一，本实现一律读 .harness-shared/。
 - 冲突策略：lesson id 相同 → latest-wins（按 created_at 取最新一条）
 - P1 仅做本地 + 共享盘 sync，远程 git pull/push 留 P2（CLI 用 --remote 占位）
 - ExperienceInjector(prompt 注入) 留给 P1 #9 adapter 阶段

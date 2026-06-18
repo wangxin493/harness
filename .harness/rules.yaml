@@ -2,9 +2,11 @@
 
 # 验证配置
 validation:
+  # （P2）超时控制：当前 validator 单文件 AST 校验耗时极短，未消费这些值
   timeout:
     quick_check: 10s
     full_check: 60s
+  # （P2）按文件大小动态调整 timeout，validator 实现后才生效
   dynamic_timeout:
     enabled: true
     rules:
@@ -78,9 +80,14 @@ governance:
   default_mode: strict
 
 # 经验市场配置
+# P1 仅消费 enabled（隐式：模块本身可用）；其余键为 P2 占位：
+# - auto_pull   ：scan/启动时是否自动 sync（P2 接入）
+# - auto_push   ：本地 add lesson 后是否自动推到共享盘 / 远程（P2）
+# - max_lessons ：adapter 注入到 generated/*.md 的 lesson 数上限（P2 改为读此值）
+# - min_score   ：get_relevant_lessons 的阈值（P2 改为读此值；当前默认 0.3）
 experience_market:
   enabled: true
-  auto_pull: true
-  auto_push: false
-  max_lessons: 10
-  min_score: 0.3
+  auto_pull: true       # (P2)
+  auto_push: false      # (P2)
+  max_lessons: 10       # (P2) 当前 adapter 写死 limit=20
+  min_score: 0.3        # (P2) 当前 ExperienceMarket.DEFAULT_MIN_SCORE 写死 0.3
