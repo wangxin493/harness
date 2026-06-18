@@ -208,6 +208,44 @@ class TestIncrementalScanner(unittest.TestCase):
         files = set(result.files.keys())
         self.assertNotIn("src/node_modules/pkg/index.ts", files)
 
+    def test_layer_reclassified_when_rules_change(self):
+        """rules.yaml 调整 layers 后，即使文件 mtime/sha1 不变，layer 也必须按新规则重算。
+
+        回归测试：曾出现过 scanner 从 metadata 缓存里直读 layer 的 bug（fe-salary-adjustment
+        接入时暴露：第一次 scan 时 layers=[] 把全部文件标成 unknown，之后改 rules.yaml
+        加了 layers 再 scan，因 mtime 未变命中缓存，layer 仍是 unknown）。
+        """
+        # 第一次：layers 留空
+        empty_rules = textwrap.dedent("""\
+            architecture:
+              layers: []
+            scanner:
+              source_root: "src"
+              include_extensions: [".ts", ".tsx", ".d.ts"]
+              exclude_globs: []
+              exclude_dirs: []
+            """)
+        (self.fx.harness_dir / "rules.yaml").write_text(empty_rules, encoding="utf-8")
+
+        self.fx.write("src/components/Btn.tsx", "export const Btn = () => <div/>;\n")
+        self.fx.write("src/api/itemService.ts", "export const itemService = {};\n")
+
+        result1 = self.fx.scan()
+        layers1 = {r.file_path: r.layer for r in result1.files.values()}
+        self.assertEqual(layers1["src/components/Btn.tsx"], "unknown")
+        self.assertEqual(layers1["src/api/itemService.ts"], "unknown")
+
+        # 第二次：补上 layers，文件不动
+        (self.fx.harness_dir / "rules.yaml").write_text(RULES_YAML, encoding="utf-8")
+        result2 = self.fx.scan()  # 注意：force_full=False，走增量路径
+        layers2 = {r.file_path: r.layer for r in result2.files.values()}
+        # 关键：layer 必须按新规则重算
+        self.assertEqual(layers2["src/components/Btn.tsx"], "component")
+        self.assertEqual(layers2["src/api/itemService.ts"], "service")
+        # 同时 components/apis 索引也要跟着更新
+        self.assertEqual([c["name"] for c in result2.components], ["Btn"])
+        self.assertEqual([a["name"] for a in result2.apis], ["itemService"])
+
 
 if __name__ == "__main__":
     unittest.main()

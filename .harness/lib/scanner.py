@@ -136,10 +136,12 @@ class IncrementalScanner:
 
             if not need_parse and "record" in prev:
                 # 复用 metadata 内嵌的 record（无解析开销）
+                # 注意：layer 是 path × rules 的派生量，不入缓存——rules.yaml 改了
+                # 但文件 mtime/sha1 不变时，旧的 layer 会过期。这里**总是现算**。
                 cached = prev["record"]
                 record = FileRecord(
                     file_path=rel_path,
-                    layer=cached.get("layer", "unknown"),
+                    layer=self._classify_layer(rel_path),
                     sha1=sha1,
                     mtime=mtime,
                     parsed_ok=cached.get("parsed_ok", True),
