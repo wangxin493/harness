@@ -1,7 +1,7 @@
 # Harness 2.0 架构总览
 
 > 由人手维护(不在 `harness scan` 自动产物里);代码动了记得回来同步。
-> 最后更新:2026-06-22
+> 最后更新:2026-06-22(补 docs/、清理 fixers/prompts/schemas/validation-cache 4 个空目录)
 
 ---
 
@@ -67,6 +67,9 @@
 │   ├── claude.md                     # Claude Code / Ducc 用的项目规范文档(被 CLAUDE.md @-import)
 │   ├── comate.md                     # Comate 用的同类文档
 │   └── ducc.md                       # Ducc 用的同类文档
+│
+├── docs/
+│   └── harness-2.0-final-design.md   # 设计稿 v2 归档(只读,不影响运行)
 │
 ├── rules.yaml                        # 唯一配置源:architecture.layers / imports / naming /
 │                                     # scanner / governance / experience_market
