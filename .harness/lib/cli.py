@@ -469,8 +469,21 @@ def lesson_add(title, content, category, severity, keywords, applies_to,
         return
     click.echo(f"✅ 已新增 lesson [{lesson.id}] → "
                f"{market.local_dir / (lesson.id + '.md')}")
-    click.echo("💡 下一步：跑 `harness scan` 刷新 generated/*.md；")
-    click.echo("   当前 Agent 会话不会感知到这条新经验（系统提示词为启动时快照），")
+
+    # 自动刷新 generated/*.md：generator 直接读 memory/lessons/，不依赖 scan 结果，
+    # 失败不阻断（和 scan_cmd 内部逻辑保持一致）。
+    project_dir = _resolve_project_dir()
+    generated_files: List[str] = []
+    try:
+        gen_result = _build_generator(project_dir).generate_all()
+        generated_files = gen_result.written
+    except Exception as exc:
+        click.echo(f"⚠️  lesson 已写入，但自动 generate 失败: {exc}", err=True)
+        click.echo("   请手动跑 `harness scan` 或 `harness generate` 刷新规则文件。", err=True)
+
+    if generated_files:
+        click.echo(f"📝 已自动刷新: {', '.join(generated_files)}")
+    click.echo("💡 当前 Agent 会话不会感知到这条新经验（系统提示词为启动时快照），")
     click.echo("   需重启会话；或在会话内让 Agent 实时读取生成文档来召回，例如：")
     click.echo("   「读 .harness/generated/claude.md 的『团队经验教训』段，列出全部条目」")
 
@@ -482,6 +495,14 @@ def lesson_remove(lesson_id: str) -> None:
     market = _build_market(_resolve_project_dir())
     if market.remove_lesson(lesson_id):
         click.echo(f"🗑️  已删除 [{lesson_id}]")
+        # 同步刷新 generated/*.md，否则被删的经验仍会留在规则文件里。
+        try:
+            gen_result = _build_generator(_resolve_project_dir()).generate_all()
+            if gen_result.written:
+                click.echo(f"📝 已自动刷新: {', '.join(gen_result.written)}")
+        except Exception as exc:
+            click.echo(f"⚠️  删除成功但自动 generate 失败: {exc}", err=True)
+            click.echo("   请手动跑 `harness scan` 或 `harness generate` 刷新规则文件。", err=True)
     else:
         click.echo(f"❌ 未找到 lesson: {lesson_id}", err=True)
         sys.exit(1)
