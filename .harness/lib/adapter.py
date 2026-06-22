@@ -7,7 +7,7 @@ P1 范围（与执行清单一致）：
 - 文件首行带时间戳 + 版本注释；用户改这些文件不会被尊重，下次 scan 会盖掉
 - 内容来源：rules.yaml + context/project-context.json + memory/lessons/
 - 经验注入：把 ExperienceMarket.list_lessons() 中未过期的 lesson 摘要整合进文档
-  （这是设计文档 ExperienceInjector 的"静态注入"形态；动态按 task 注入留给运行时）
+  （静态注入：scan 时一次性渲染到 generated/*.md，由 CLAUDE.md 的 @-import 注入会话上下文）
 
 设计原则：
 - 每个 adapter 的 render() 是纯函数：输入 GenerateContext，输出 markdown 字符串

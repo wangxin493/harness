@@ -11,7 +11,6 @@
    - context/scan-metadata.json     文件指纹（mtime + sha1 + parsed_ok）
 
 对外约定：
-- cache.py / dependency_graph.py 仅**只读**消费 dependency-graph.json
 - type-only import 不进依赖图（is_type_only=True 的 import 跳过）
 - 外部包（react、lodash 等非 @/ 与非相对路径）记入 imports，但不进依赖图
 - src/ 直接子文件（layer=unknown）保留 imports/exports 但不分类
