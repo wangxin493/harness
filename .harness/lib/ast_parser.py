@@ -47,6 +47,23 @@ class ExportItem:
 
 
 @dataclass
+class HookCall:
+    """useXxx() 形式的调用点。
+
+    用于 React Rules-of-Hooks 项目层叠加版校验：
+    - in_function: 包含此调用的最近 named function/arrow 名字（无名时填 ""）
+    - in_function_kind: function | arrow | method | top_level
+    - in_branch: 是否处于 if/for/while/&&/||/?: 等条件路径上（粗判，宁严勿松）
+    """
+
+    callee: str                  # "useState" / "useEffect" / "useMyHook"
+    line: int                    # 1-indexed
+    in_function: str             # 包裹函数名；顶层调用为 ""
+    in_function_kind: str        # function | arrow | method | top_level
+    in_branch: bool              # 是否在条件 / 循环里
+
+
+@dataclass
 class ParseResult:
     """解析结果。"""
 
@@ -54,6 +71,7 @@ class ParseResult:
     language: str                 # "typescript" | "tsx"
     imports: List[ImportRef] = field(default_factory=list)
     exports: List[ExportItem] = field(default_factory=list)
+    hook_calls: List[HookCall] = field(default_factory=list)
     parse_errors: List[str] = field(default_factory=list)
 
 
@@ -102,6 +120,7 @@ class TypeScriptParser:
 
         self._collect_parse_errors(tree.root_node, result)
         self._walk_top_level(tree.root_node, source, result)
+        self._collect_hook_calls(tree.root_node, source, result)
 
         return result
 
@@ -163,6 +182,145 @@ class TypeScriptParser:
                 self._handle_export(child, source, result)
             # 其它顶层语句（函数声明、变量声明等）暂不直接收集；
             # 仅 `export ...` 包裹的声明会被记入 exports。
+
+    # -- hook 调用收集 ------------------------------------------------------
+
+    # 是否被视为分支节点（hook 调用出现在这些子树内 → in_branch=True）
+    _BRANCH_NODES = frozenset({
+        "if_statement",
+        "else_clause",
+        "switch_statement",
+        "for_statement",
+        "for_in_statement",
+        "for_of_statement",
+        "while_statement",
+        "do_statement",
+        "ternary_expression",
+        # `a && useX()` / `a || useX()` —— 条件求值
+        # 注意：tree-sitter 把所有二元都叫 binary_expression，是否分支要看 operator
+        # 这里在 walker 里手动判 operator 而不是把 binary_expression 全列入
+    })
+
+    # 函数子树根（进入这里要新开 function context）
+    _FUNCTION_NODES = frozenset({
+        "function_declaration",
+        "generator_function_declaration",
+        "function_expression",
+        "arrow_function",
+        "method_definition",
+    })
+
+    def _collect_hook_calls(self, root, source: bytes, result: ParseResult) -> None:
+        """递归整个 AST 收集 useXxx() 调用，记录所在函数 + 是否在分支里。
+
+        识别 callee：
+          - 最简形式：identifier 节点，文本以 ``use`` + 大写字母 / 数字开头
+          - 不识别 ``a.useFoo()`` / ``useFoo.bar()``（成员调用），交由更高层规则处理
+        """
+        # 工作栈：(node, fn_name, fn_kind, in_branch)
+        work = [(root, "", "top_level", False)]
+        while work:
+            node, fn_name, fn_kind, in_branch = work.pop()
+
+            # 当前节点本身是 call_expression：先判 hook，再继续向下
+            if node.type == "call_expression":
+                callee = node.child_by_field_name("function")
+                if callee is not None and callee.type == "identifier":
+                    text = self._node_text(callee, source)
+                    if self._is_hook_name(text):
+                        result.hook_calls.append(HookCall(
+                            callee=text,
+                            line=node.start_point[0] + 1,
+                            in_function=fn_name,
+                            in_function_kind=fn_kind,
+                            in_branch=in_branch,
+                        ))
+
+            # 决定子节点的上下文
+            new_fn_name, new_fn_kind = fn_name, fn_kind
+            if node.type in self._FUNCTION_NODES:
+                new_fn_name = self._infer_function_name(node, source) or ""
+                new_fn_kind = self._function_kind_label(node.type)
+
+            # 入子节点
+            for child in node.children:
+                child_branch = in_branch or self._enters_branch(node, child)
+                # 一旦进入新的函数子树，"分支" 重置 —— hook 在新函数内部不再算"上层分支"
+                if child.type in self._FUNCTION_NODES:
+                    child_branch = False
+                work.append((child, new_fn_name, new_fn_kind, child_branch))
+
+    @staticmethod
+    def _is_hook_name(text: str) -> bool:
+        """判定标识符是否像 React hook 名（use + 大写字母开头）。
+
+        排除 ``use`` 本身、``user``、``useless`` 等：必须是 ``use`` + 大写字母。
+        ``useX`` 这种单字母 hook 也允许。
+        """
+        if not text.startswith("use") or len(text) <= 3:
+            return False
+        return text[3].isupper()
+
+    def _enters_branch(self, parent, child) -> bool:
+        """判定 child 是否属于 parent 的"分支"子树。
+
+        - parent 在 _BRANCH_NODES：除了 condition 本身，进入 consequence/alternative
+          都算分支；这里粗略地把所有非 condition 子节点都视为分支（保守）。
+        - parent 是 binary_expression 且 operator ∈ {&&, ||, ??}：右操作数算分支；
+          左操作数永远求值，不算。
+        """
+        if parent.type in self._BRANCH_NODES:
+            # condition 字段本身（if/while/ternary 的判断式）不进入分支体
+            cond = parent.child_by_field_name("condition")
+            if cond is not None and child == cond:
+                return False
+            # do_statement 的 body 也算分支体（do { useX() } while(cond) → 一定执行，
+            # 但 RoH 的语义还是要求 hook 不在 do/while 里，因为重复次数取决于运行时）
+            return True
+
+        if parent.type == "binary_expression":
+            # 在 children 里找 &&/||/?? 这种 operator token
+            short_circuit = any(c.type in ("&&", "||", "??") for c in parent.children)
+            if short_circuit:
+                left = parent.child_by_field_name("left")
+                if left is not None and child != left:
+                    return True
+        return False
+
+    def _infer_function_name(self, fn_node, source: bytes) -> str:
+        """推断函数名。
+
+        - function_declaration / class method 直接读 name 字段
+        - arrow_function / function_expression：看父链上的 variable_declarator name 或 pair key
+        """
+        t = fn_node.type
+        if t in ("function_declaration", "generator_function_declaration", "method_definition"):
+            return self._field_text(fn_node, "name", source) or ""
+        # arrow / function expression：往上找
+        parent = fn_node.parent
+        if parent is None:
+            return ""
+        if parent.type == "variable_declarator":
+            return self._field_text(parent, "name", source) or ""
+        if parent.type == "pair":
+            key = parent.child_by_field_name("key")
+            if key is not None:
+                return self._node_text(key, source)
+        if parent.type == "assignment_expression":
+            left = parent.child_by_field_name("left")
+            if left is not None:
+                return self._node_text(left, source)
+        return ""
+
+    @staticmethod
+    def _function_kind_label(node_type: str) -> str:
+        if node_type in ("function_declaration", "generator_function_declaration", "function_expression"):
+            return "function"
+        if node_type == "arrow_function":
+            return "arrow"
+        if node_type == "method_definition":
+            return "method"
+        return "function"
 
     # -- import_statement ---------------------------------------------------
 

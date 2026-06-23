@@ -90,6 +90,7 @@ REQUIRED_PACKAGES: Tuple[Tuple[str, str, str], ...] = (
     ("tree-sitter-typescript", "==0.21.2", "tree_sitter_typescript"),
     ("click",                  ">=8.1,<9", "click"),
     ("PyYAML",                 ">=6.0,<7", "yaml"),
+    ("watchdog",               ">=4.0,<6", "watchdog"),
 )
 
 MIN_PYTHON = (3, 9)

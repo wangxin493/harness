@@ -337,5 +337,119 @@ class TestSync(unittest.TestCase):
         self.assertTrue(result.remote_skipped)
 
 
+# ---------------------------------------------------------------------------
+# match_lessons：PostToolUse hook 用的触发型匹配
+# ---------------------------------------------------------------------------
+
+
+class TestMatchLessons(unittest.TestCase):
+    def setUp(self):
+        self.fx = MarketFixture()
+        self.m = self.fx.market()
+
+    def tearDown(self):
+        self.fx.cleanup()
+
+    def _add(self, lid, *, applies_to=None, keywords=None, content="body",
+             title=None, expires_at=None, created_at=None):
+        lesson = self.m.add_lesson(
+            title=title or f"L-{lid}",
+            content=content,
+            applies_to=applies_to or [],
+            keywords=keywords or [],
+            lesson_id=lid,
+            expires_at=expires_at,
+        )
+        # 如果指定 created_at，手动改 frontmatter
+        if created_at:
+            md = self.fx.harness_dir / "memory" / "lessons" / f"{lid}.md"
+            text = md.read_text(encoding="utf-8")
+            text = text.replace(
+                f"created_at: {lesson.created_at}",
+                f"created_at: {created_at}",
+            )
+            md.write_text(text, encoding="utf-8")
+        return lesson
+
+    def test_applies_to_path_match(self):
+        self._add("api", applies_to=["src/api/"], keywords=[])
+        self._add("comp", applies_to=["src/components/"], keywords=[])
+        result = self.m.match_lessons(file_path="src/api/userService.ts", content="")
+        ids = [l.id for l in result]
+        self.assertIn("api", ids)
+        self.assertNotIn("comp", ids)
+
+    def test_keyword_in_content_case_insensitive(self):
+        self._add("batch", applies_to=[], keywords=["Promise.allSettled"])
+        result = self.m.match_lessons(
+            file_path="src/components/Foo.tsx",
+            content="const r = await PROMISE.ALLSETTLED([...]);",
+        )
+        ids = [l.id for l in result]
+        self.assertIn("batch", ids)
+
+    def test_keyword_in_file_path(self):
+        self._add("delete", applies_to=[], keywords=["delete"])
+        result = self.m.match_lessons(
+            file_path="src/components/UserDelete.tsx", content="",
+        )
+        ids = [l.id for l in result]
+        self.assertIn("delete", ids)
+
+    def test_global_lesson_no_filter_always_hits(self):
+        # 没有 applies_to + 没有 keywords → 全局
+        self._add("global", applies_to=[], keywords=[])
+        # 也加个仅路径相关的，确保它的优先级更高
+        self._add("api", applies_to=["src/api/"], keywords=[])
+        result = self.m.match_lessons(file_path="src/api/x.ts", content="")
+        ids = [l.id for l in result]
+        self.assertIn("global", ids)
+        self.assertIn("api", ids)
+        # api 路径命中（+2）应该排在 global（+1）之前
+        self.assertLess(ids.index("api"), ids.index("global"))
+
+    def test_no_match_returns_empty(self):
+        self._add("api", applies_to=["src/api/"], keywords=["specific"])
+        result = self.m.match_lessons(
+            file_path="src/components/Foo.tsx", content="不相关",
+        )
+        self.assertEqual(result, [])
+
+    def test_expired_lesson_skipped(self):
+        self._add("expired", applies_to=["src/"], keywords=[],
+                  expires_at="2020-01-01T00:00:00")
+        result = self.m.match_lessons(file_path="src/api/x.ts", content="")
+        self.assertEqual([l.id for l in result], [])
+
+    def test_multiple_keywords_higher_score(self):
+        self._add("two", applies_to=[], keywords=["foo", "bar"])
+        self._add("one", applies_to=[], keywords=["foo"])
+        result = self.m.match_lessons(
+            file_path="src/x.ts", content="foo bar baz",
+        )
+        ids = [l.id for l in result]
+        # 命中 2 个关键词应该排在命中 1 个的前面
+        self.assertEqual(ids[:2], ["two", "one"])
+
+    def test_limit(self):
+        for i in range(7):
+            self._add(f"l{i}", applies_to=["src/"], keywords=[])
+        result = self.m.match_lessons(
+            file_path="src/x.ts", content="", limit=3,
+        )
+        self.assertEqual(len(result), 3)
+
+    def test_path_and_keyword_combine(self):
+        # 路径 +2 加 关键词 +1 = 3 分，应该排在仅路径（2）和仅关键词（1）之前
+        self._add("both", applies_to=["src/api/"], keywords=["fetch"])
+        self._add("path-only", applies_to=["src/api/"], keywords=[])
+        self._add("kw-only", applies_to=[], keywords=["fetch"])
+        result = self.m.match_lessons(
+            file_path="src/api/x.ts", content="fetch users",
+        )
+        ids = [l.id for l in result]
+        self.assertEqual(ids[0], "both")
+
+
 if __name__ == "__main__":
     unittest.main()

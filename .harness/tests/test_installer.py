@@ -60,7 +60,12 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         self.assertEqual(len(post), 1)
         self.assertEqual(set(post[0]["matcher"].split("|")),
                          {"Write", "Edit", "MultiEdit"})
-        self.assertEqual(post[0]["hooks"][0]["command"], HOOK_COMMAND)
+        # 安装两个 hook：validate-code.sh + inject-lessons.sh
+        commands = [h["command"] for h in post[0]["hooks"]]
+        self.assertEqual(len(commands), 2)
+        self.assertIn(HOOK_COMMAND, commands)
+        from lib.installer import INJECT_LESSONS_COMMAND
+        self.assertIn(INJECT_LESSONS_COMMAND, commands)
 
         # changes 列表里 settings 应记 created
         actions = {str(c.path): c.action for c in result.changes}
@@ -77,9 +82,9 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         data = json.loads(settings_file.read_text(encoding="utf-8"))
         post = data["hooks"]["PostToolUse"]
 
-        # 仍然只有 1 个 group、1 个 hook 条目
+        # 仍然只有 1 个 group、2 个 hook 条目（validate + inject-lessons）
         self.assertEqual(len(post), 1)
-        self.assertEqual(len(post[0]["hooks"]), 1)
+        self.assertEqual(len(post[0]["hooks"]), 2)
 
         # 第二次 install 应该所有 change 都是 unchanged
         actions = {c.action for c in result.changes}
@@ -138,6 +143,8 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         commands = {entry["command"] for g in post for entry in g["hooks"]}
         self.assertIn("~/.baidu-cc/hooks/data-report --post-tool-use", commands)
         self.assertIn(HOOK_COMMAND, commands)
+        from lib.installer import INJECT_LESSONS_COMMAND
+        self.assertIn(INJECT_LESSONS_COMMAND, commands)
 
         # 其它顶级 key（permissions）也保留
         self.assertEqual(data["permissions"]["deny"], ["WebSearch"])

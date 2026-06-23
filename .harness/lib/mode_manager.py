@@ -83,6 +83,19 @@ DEFAULT_RULES: List[RuleConfig] = [
     # type-safety —— relaxed 仍拦截（类型问题往往是真 bug）
     RuleConfig("type-no-any",       "type-safety",   "error",   True,  False),
     RuleConfig("type-mismatch",     "type-safety",   "error",   True,  False),
+
+    # hook 调用规则（React Rules-of-Hooks 项目层叠加）—— 误调用层面是真 bug
+    RuleConfig("hook-call-misplaced",   "hook",      "error",   True,  False),
+    RuleConfig("hook-call-top-level",   "hook",      "error",   True,  False),
+    RuleConfig("hook-call-in-plain-func","hook",     "error",   True,  False),
+    RuleConfig("hook-call-conditional", "hook",      "error",   True,  False),
+
+    # 全项目维度（harness check）
+    RuleConfig("cycle",             "cycle",         "error",   True,  False),
+    RuleConfig("unused-export",     "unused-export", "warning", False, False),
+
+    # 命名相似度 —— info/warning 提示性，relaxed 不启用
+    RuleConfig("name-similarity",   "naming",        "warning", False, False),
 ]
 
 

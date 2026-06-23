@@ -1,7 +1,7 @@
 # Harness 2.0 架构总览
 
 > 由人手维护(不在 `harness scan` 自动产物里);代码动了记得回来同步。
-> 最后更新:2026-06-22(补 docs/、清理 fixers/prompts/schemas/validation-cache 4 个空目录)
+> 最后更新:2026-06-23(新增 lesson 动态注入 hook + scan --watch + 全项目 check + hook 调用 / 命名相似 / 循环 / 死代码)
 
 ---
 
@@ -15,23 +15,31 @@
 ├── hooks/
 │   ├── validate-code.sh              # PostToolUse hook:Agent Write/Edit src/**/*.{ts,tsx,d.ts} 后自动跑
 │   │                                 # harness validate;违规则 stderr 输出 decision:block JSON + exit 2
+│   ├── inject-lessons.sh             # PostToolUse hook(同位面):按 file_path + content
+│   │                                 # 调 harness lesson match,把命中的经验通过 additionalContext 推给 Agent
 │   └── refresh-generated.sh          # SessionStart hook:会话启动/恢复/clear 时跑 harness scan,
 │                                     # 刷新 generated/*.md 让新经验进入 Agent 上下文
 │
 ├── lib/                              # ─────────── 核心 Python 库 ───────────
 │   ├── __init__.py                   # 空,Python 包标记
-│   ├── cli.py                        # Click 子命令路由:scan / validate / fix / mode / status /
+│   ├── cli.py                        # Click 子命令路由:scan / validate / check / fix / mode / status /
 │   │                                 # lesson / sync / generate / doctor / upgrade / install / uninstall
 │   ├── scanner.py                    # 增量扫 src/,按 mtime+sha1 跳过未变文件;
 │   │                                 # 产出 project-context / dependency-graph / scan-metadata
-│   ├── ast_parser.py                 # tree-sitter TS/TSX AST 解析,抽 imports/exports/JSX 标记;
+│   │                                 # FileRecord 携带 hook_calls(metadata schema_version=2)
+│   ├── watch.py                      # scan --watch 后台:watchdog 监听 src/,去抖后跑增量 scan
+│   ├── ast_parser.py                 # tree-sitter TS/TSX AST 解析,抽 imports/exports/JSX/hook 调用;
 │   │                                 # scanner 和 validator 共用
-│   ├── validator.py                  # 单文件校验三件套:架构层 / 导入前缀 / 命名规范,返回 Issue[]
+│   ├── validator.py                  # 单文件校验:架构层 / 导入前缀 / 命名 / hook 调用 / 命名相似度,
+│   │                                 # 返回 Issue[]
+│   ├── global_check.py               # 全项目维度:Tarjan 循环依赖 + unused-export 死代码;
+│   │                                 # 读 scan 产物的 dependency-graph/project-context
 │   ├── mode_manager.py               # 治理模式状态机 strict/relaxed/off,
 │   │                                 # 按模式过滤 Issue.severity,读写 mode-config.json
 │   ├── fixer.py                      # 自动修复 import-forbidden:@/services/foo → @/api/foo,
 │   │                                 # --apply 走 git apply 落盘
 │   ├── experience_market.py          # 经验市场 CRUD:lesson add/list/show/remove +
+│   │                                 # match_lessons(file_path,content) 触发型匹配 +
 │   │                                 # .harness-shared/ 同步,Markdown+YAML frontmatter 存储
 │   ├── adapter.py                    # 三家 Agent 适配器(Claude/Comate/Ducc),
 │   │                                 # 把 rules + scan 结果 + lessons 渲染成 generated/{claude,comate,ducc}.md
@@ -40,15 +48,20 @@
 │   └── doctor.py                     # 体检:python / venv / 三方依赖 / rules.yaml /
 │                                     # dependency-graph / mode-config / git / 共享盘
 │
-├── tests/                            # 140 个单测,覆盖所有 lib 模块 + cli + hook 协议
+├── tests/                            # 238 个单测,覆盖所有 lib 模块 + cli + hook 协议
 │   ├── _setup.py                     # 测试 PYTHONPATH 注入
-│   ├── test_ast_parser.py
+│   ├── test_ast_parser.py            # 含 hook_calls 抽取(11 个新)
 │   ├── test_scanner.py
-│   ├── test_validator.py
+│   ├── test_validator.py             # 含 hook_call_check / name_similarity(13 个新)
 │   ├── test_validate_cli.py
+│   ├── test_global_check.py          # Tarjan + unused-export(17 个)
+│   ├── test_check_cli.py             # harness check CLI 集成(7 个)
 │   ├── test_mode_manager.py
 │   ├── test_fixer.py
-│   ├── test_experience_market.py
+│   ├── test_experience_market.py     # 含 match_lessons 触发型匹配测试
+│   ├── test_lesson_match_cli.py      # harness lesson match 子命令测试
+│   ├── test_inject_lessons_hook.py   # inject-lessons.sh 端到端测试
+│   ├── test_watch.py                 # scan --watch 监听器测试
 │   ├── test_adapter.py
 │   ├── test_installer.py
 │   └── test_doctor.py
@@ -168,8 +181,11 @@ sequenceDiagram
 
 | 防线 | 触发时机 | 作用 |
 |---|---|---|
-| 系统提示词注入 | 会话启动一次 | **预防** — Agent 在生成阶段就遵守规则,不需要事后改 |
-| PostToolUse hook | 每次 Write/Edit | **兜底** — 即便规则没注入或 Agent 走神,违规也无法落盘 |
+| 系统提示词注入 | 会话启动一次 | **预防** — Agent 在生成阶段就遵守规则,不需要事后改;lesson 仅显示标题索引,正文按需注入避免撑提示词 |
+| PostToolUse: validate | 每次 Write/Edit | **兜底拦截** — 违规 stderr decision:block + exit 2,Agent 自纠;含架构 / 导入 / hook 调用 / 命名相似 5 大类 |
+| PostToolUse: inject-lessons | 每次 Write/Edit | **按需注入** — 按 file_path + content 命中相关 lesson,通过 additionalContext 推给 Agent |
+| 开发常驻: scan --watch | 文件变化(可选) | **快速反馈** — watchdog 监听 src/,去抖后跑增量 scan,省 SessionStart 等待 |
+| 全项目体检: harness check | 手动 / pre-commit | **离线扫雷** — 跑 Tarjan 找循环依赖 + unused-export 死代码,不卡 PostToolUse |
 
 ### 为什么能「零开发接入」
 
@@ -182,9 +198,12 @@ sequenceDiagram
 | 管 | 不管 |
 |---|---|
 | 架构层 / 导入前缀 / 命名规范 | 业务逻辑对不对 |
-| 团队约定(lessons) | 性能 / 安全 / a11y |
-| 增量扫描 / 依赖图 | `.js / .jsx`(只解析 ts/tsx/d.ts) |
-| import-forbidden 自动修复 | 架构违规 / 命名违规的自动修复 |
+| Hook 调用规则(错层 / 顶层 / 普通函数 / 条件) | 性能 / 安全 / a11y |
+| 命名相似度提示(可能的重复实现) | `.js / .jsx`(只解析 ts/tsx/d.ts) |
+| 循环依赖 + 死代码(全项目维度) | 架构违规 / 命名违规的自动修复 |
+| 团队约定(lessons) | |
+| 增量扫描 / 依赖图 | |
+| import-forbidden 自动修复 | |
 
 ---
 

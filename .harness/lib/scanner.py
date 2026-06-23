@@ -45,6 +45,7 @@ class FileRecord:
     parsed_ok: bool
     imports: List[Dict]        # [{ source, resolved, is_type_only, is_reexport, is_external, line }]
     exports: List[Dict]        # ast_parser ExportItem 序列化
+    hook_calls: List[Dict] = field(default_factory=list)   # ast_parser HookCall 序列化
     parse_errors: List[str] = field(default_factory=list)
 
 
@@ -82,7 +83,7 @@ class IncrementalScanner:
         result = scanner.scan(force_full=False)
     """
 
-    SCAN_METADATA_VERSION = 1
+    SCAN_METADATA_VERSION = 2
 
     def __init__(
         self,
@@ -146,6 +147,7 @@ class IncrementalScanner:
                     parsed_ok=cached.get("parsed_ok", True),
                     imports=cached.get("imports", []),
                     exports=cached.get("exports", []),
+                    hook_calls=cached.get("hook_calls", []),
                     parse_errors=cached.get("parse_errors", []),
                 )
             else:
@@ -216,11 +218,13 @@ class IncrementalScanner:
             parse_errors = list(parse_result.parse_errors)
             imports_raw = parse_result.imports
             exports_raw = parse_result.exports
+            hook_calls_raw = parse_result.hook_calls
         except Exception as exc:
             parsed_ok = False
             parse_errors = [f"parser_exception: {exc}"]
             imports_raw = []
             exports_raw = []
+            hook_calls_raw = []
 
         # 序列化 imports，附加 resolved + is_external
         imports: List[Dict] = []
@@ -236,6 +240,7 @@ class IncrementalScanner:
             })
 
         exports: List[Dict] = [asdict(e) for e in exports_raw]
+        hook_calls: List[Dict] = [asdict(h) for h in hook_calls_raw]
 
         return FileRecord(
             file_path=rel_path,
@@ -245,6 +250,7 @@ class IncrementalScanner:
             parsed_ok=parsed_ok,
             imports=imports,
             exports=exports,
+            hook_calls=hook_calls,
             parse_errors=parse_errors,
         )
 
@@ -476,6 +482,7 @@ class IncrementalScanner:
                         "parsed_ok": f.parsed_ok,
                         "imports": f.imports,
                         "exports": f.exports,
+                        "hook_calls": f.hook_calls,
                         "parse_errors": f.parse_errors,
                     },
                 }

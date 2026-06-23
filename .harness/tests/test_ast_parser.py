@@ -129,5 +129,161 @@ class TestTypeScriptParser(unittest.TestCase):
         self.assertTrue(len(result.parse_errors) > 0)
 
 
+class TestHookCallExtraction(unittest.TestCase):
+    """ast_parser hook_calls 抽取测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.parser = TypeScriptParser()
+
+    def test_hook_call_in_component(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export function MyComp() {\n"
+            "  const [x, setX] = useState(0);\n"
+            "  return <div>{x}</div>;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(len(result.hook_calls), 1)
+        hc = result.hook_calls[0]
+        self.assertEqual(hc.callee, "useState")
+        self.assertEqual(hc.in_function, "MyComp")
+        self.assertEqual(hc.in_function_kind, "function")
+        self.assertFalse(hc.in_branch)
+
+    def test_hook_call_in_custom_hook_arrow(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export const useCounter = () => {\n"
+            "  const [x, setX] = useState(0);\n"
+            "  return [x, setX] as const;\n"
+            "};\n",
+            ".ts",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(len(result.hook_calls), 1)
+        hc = result.hook_calls[0]
+        self.assertEqual(hc.in_function, "useCounter")
+        self.assertEqual(hc.in_function_kind, "arrow")
+
+    def test_hook_call_top_level(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "const x = useState(0);\n",
+            ".ts",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(len(result.hook_calls), 1)
+        self.assertEqual(result.hook_calls[0].in_function_kind, "top_level")
+
+    def test_hook_call_in_plain_function(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "function helper() {\n"
+            "  return useState(0);\n"
+            "}\n",
+            ".ts",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(result.hook_calls[0].in_function, "helper")
+        self.assertEqual(result.hook_calls[0].in_function_kind, "function")
+
+    def test_hook_call_in_if_branch(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export function MyComp(p: { a: boolean }) {\n"
+            "  if (p.a) {\n"
+            "    const [x] = useState(0);\n"
+            "  }\n"
+            "  return null;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(len(result.hook_calls), 1)
+        self.assertTrue(result.hook_calls[0].in_branch)
+
+    def test_hook_call_in_for_loop(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export function MyComp() {\n"
+            "  for (let i = 0; i < 3; i++) {\n"
+            "    useState(i);\n"
+            "  }\n"
+            "  return null;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        self.assertTrue(result.hook_calls[0].in_branch)
+
+    def test_hook_call_short_circuit_right(self):
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export function C(p: { ok: boolean }) {\n"
+            "  const x = p.ok && useState(0);\n"
+            "  return null;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(len(result.hook_calls), 1)
+        self.assertTrue(result.hook_calls[0].in_branch)
+
+    def test_non_hook_identifier_excluded(self):
+        # useless / user / use（不接大写）不应被识别为 hook
+        path = write_temp(
+            "function f() { useless(); user(); use(); }\n",
+            ".ts",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(result.hook_calls, [])
+
+    def test_member_use_call_excluded(self):
+        # foo.useState() 不识别（成员调用通常不是 React hook 本体）
+        path = write_temp(
+            "function f() { foo.useState(0); }\n",
+            ".ts",
+        )
+        result = self.parser.parse(path)
+        self.assertEqual(result.hook_calls, [])
+
+    def test_multiple_hook_calls(self):
+        path = write_temp(
+            "import { useState, useEffect } from 'react';\n"
+            "export function C() {\n"
+            "  const [x] = useState(0);\n"
+            "  useEffect(() => {}, []);\n"
+            "  return null;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        callees = sorted(h.callee for h in result.hook_calls)
+        self.assertEqual(callees, ["useEffect", "useState"])
+
+    def test_nested_function_resets_branch(self):
+        # 外层 if 内定义一个新函数，新函数体内的 hook 不算"上层分支"
+        path = write_temp(
+            "import { useState } from 'react';\n"
+            "export function C(p: { a: boolean }) {\n"
+            "  if (p.a) {\n"
+            "    function useInner() { return useState(0); }\n"
+            "    useInner();\n"
+            "  }\n"
+            "  return null;\n"
+            "}\n",
+            ".tsx",
+        )
+        result = self.parser.parse(path)
+        # 应该至少有 useState 这条；它的 in_function=useInner，in_branch=False
+        inner_calls = [h for h in result.hook_calls if h.callee == "useState"]
+        self.assertEqual(len(inner_calls), 1)
+        self.assertEqual(inner_calls[0].in_function, "useInner")
+        self.assertFalse(inner_calls[0].in_branch)
+
+
 if __name__ == "__main__":
     unittest.main()

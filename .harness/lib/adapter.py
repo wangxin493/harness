@@ -191,6 +191,41 @@ def _render_lessons(lessons: List[Dict[str, Any]], limit: int = 20) -> str:
     return "\n\n".join(parts)
 
 
+def _render_lessons_brief(lessons: List[Dict[str, Any]], limit: int = 30) -> str:
+    """精简版：只输出 title + applies_to + 关键词 + 一行摘要。
+
+    给 Claude / Comate / Ducc 的 generated/*.md 用 —— 系统提示词只承担「索引」职责，
+    正文由 PostToolUse hook 的 inject-lessons.sh 按当前文件路径动态注入。
+    """
+    if not lessons:
+        return ("_暂无经验记录；可用 `harness lesson add` 添加。"
+                "写代码时若有相关经验会通过 PostToolUse 自动注入。_")
+
+    header = (
+        "> 以下仅列标题与适用范围；写代码时相关经验会通过 PostToolUse hook "
+        "自动注入完整正文。如需现在查看：`harness lesson show <id>`。\n"
+    )
+    parts = [header]
+    for l in lessons[:limit]:
+        sev = l.get("severity") or "warning"
+        title = l.get("title") or "(untitled)"
+        applies = ", ".join(l.get("applies_to") or []) or "-"
+        keywords = ", ".join(l.get("keywords") or []) or "-"
+        # 一行摘要：取正文首行（截断到 80 字）
+        body = (l.get("content") or "").strip().splitlines()
+        first_line = body[0].strip() if body else ""
+        if len(first_line) > 80:
+            first_line = first_line[:80] + "…"
+        lid = l.get("id") or "?"
+        line = f"- **[{sev}]** {title} `[{lid}]` — 适用 `{applies}`；关键词 {keywords}"
+        if first_line:
+            line += f"\n  > {first_line}"
+        parts.append(line)
+    if len(lessons) > limit:
+        parts.append(f"_… 还有 {len(lessons) - limit} 条经验（运行 `harness lesson list`）_")
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # 三个具体 adapter
 # ---------------------------------------------------------------------------
@@ -246,13 +281,14 @@ class ClaudeAdapter(AgentAdapter):
 
 {_render_top_items(ctx.project_context.get("apis") or [], "API")}
 
-## 🔥 团队经验教训
+## 🔥 团队经验教训（索引）
 
-{_render_lessons(ctx.lessons)}
+{_render_lessons_brief(ctx.lessons)}
 
 ## 🛠️ 工作流
 
 - 修改代码后 PostToolUse hook 会自动跑 `harness validate`
+- 同一 PostToolUse 还会按当前 file_path + 内容动态注入相关经验（inject-lessons.sh）
 - 验证失败会以 `decision: block` 返回；按 reason 修改后再保存
 - 治理模式可通过 `harness mode <strict|relaxed|off>` 切换
 - 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）
@@ -301,9 +337,9 @@ class ComateAdapter(AgentAdapter):
 
 {_render_top_items(ctx.project_context.get("apis") or [], "API", limit=20)}
 
-## 🔥 团队经验教训
+## 🔥 团队经验教训（索引）
 
-{_render_lessons(ctx.lessons)}
+{_render_lessons_brief(ctx.lessons)}
 """
 
 
@@ -349,9 +385,9 @@ class DuccAdapter(AgentAdapter):
 
 {_render_top_items(ctx.project_context.get("hooks") or [], "Hook")}
 
-## 🔥 团队经验教训
+## 🔥 团队经验教训（索引）
 
-{_render_lessons(ctx.lessons)}
+{_render_lessons_brief(ctx.lessons)}
 """
 
 

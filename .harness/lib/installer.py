@@ -37,6 +37,15 @@ HOOK_COMMAND = 'bash "$CLAUDE_PROJECT_DIR/.harness/hooks/validate-code.sh"'
 # 我们用于识别 hook 是不是 harness 装的子串（兼容用户改过环境变量名的极端情况）
 HOOK_COMMAND_FINGERPRINT = ".harness/hooks/validate-code.sh"
 
+# Lesson 动态注入 hook —— 与 validate 是同位面的两个 PostToolUse hook
+# validate 拦截违规（exit 2）；inject-lessons 永远 exit 0 但通过 additionalContext
+# 给 Agent 推送相关团队经验。两者并存，互不影响。
+INJECT_LESSONS_COMMAND = 'bash "$CLAUDE_PROJECT_DIR/.harness/hooks/inject-lessons.sh"'
+INJECT_LESSONS_FINGERPRINT = ".harness/hooks/inject-lessons.sh"
+
+# 所有 harness 在 PostToolUse 里装的 hook 指纹（_count / _remove 一并处理）
+ALL_POST_TOOL_FINGERPRINTS = (HOOK_COMMAND_FINGERPRINT, INJECT_LESSONS_FINGERPRINT)
+
 # CLAUDE.md 托管块标记
 CLAUDE_MD_BEGIN = "<!-- harness:begin (managed; do not edit between markers) -->"
 CLAUDE_MD_END = "<!-- harness:end -->"
@@ -202,11 +211,16 @@ class ClaudeInstaller:
 
     @staticmethod
     def _is_harness_hook_entry(hook_entry: Any) -> bool:
-        """判断一个 hook 条目（hooks[].hooks[].command 的最内层）是否 harness 装的。"""
+        """判断一个 hook 条目（hooks[].hooks[].command 的最内层）是否 harness 装的。
+
+        识别两类 PostToolUse hook：validate-code.sh + inject-lessons.sh
+        """
         if not isinstance(hook_entry, dict):
             return False
         cmd = hook_entry.get("command")
-        return isinstance(cmd, str) and HOOK_COMMAND_FINGERPRINT in cmd
+        if not isinstance(cmd, str):
+            return False
+        return any(fp in cmd for fp in ALL_POST_TOOL_FINGERPRINTS)
 
     def _count_harness_hooks(self, settings: Dict[str, Any]) -> int:
         count = 0
@@ -220,15 +234,14 @@ class ClaudeInstaller:
     def _merge_hook_into_settings(
         self, settings: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], str]:
-        """把 harness hook 合并进 settings；返回 (新 settings, 动作描述)。
+        """把 harness 的两个 PostToolUse hook（validate + inject-lessons）合并进 settings。
 
         合并策略：
-        1. 先扫一遍 PostToolUse 所有 group：
-           - 若已存在 harness hook（按 fingerprint），且所在 group 的 matcher 是
-             "Write|Edit|MultiEdit"（顺序无关），就视为最新形态，啥都不改
-           - 若已存在 harness hook 但 matcher 不一致 → 删旧，下面统一加新
-        2. 找一个 matcher 等价于 "Write|Edit|MultiEdit" 的现有 group 把 harness 条目
-           插进去；找不到就新建一个 group
+        1. 先扫一遍 PostToolUse 所有 group，删掉**所有**老 harness hook 条目
+           （按 fingerprint 识别，覆盖 validate-code.sh + inject-lessons.sh 两种）
+        2. 找一个 matcher 等价于 "Write|Edit|MultiEdit" 的现有 group 把新条目插进去；
+           找不到就新建一个 group
+        3. 两个 hook 一起插入（顺序：validate 先于 inject-lessons，保持 stderr/stdout 语义独立）
         """
         # 深拷贝避免改入参
         data = json.loads(json.dumps(settings)) if settings else {}
@@ -260,21 +273,20 @@ class ClaudeInstaller:
                 target_group = group
                 break
 
-        new_entry = {
-            "type": "command",
-            "command": HOOK_COMMAND,
-            "timeout": 30,
-        }
+        new_entries = [
+            {"type": "command", "command": HOOK_COMMAND, "timeout": 30},
+            {"type": "command", "command": INJECT_LESSONS_COMMAND, "timeout": 15},
+        ]
 
         if target_group is not None:
-            target_group.setdefault("hooks", []).append(new_entry)
-            detail = f"已合并到现有 PostToolUse(matcher={target_matcher_str}) 组"
+            target_group.setdefault("hooks", []).extend(new_entries)
+            detail = f"已合并到现有 PostToolUse(matcher={target_matcher_str}) 组（validate + inject-lessons）"
         else:
             post_tool.append({
                 "matcher": target_matcher_str,
-                "hooks": [new_entry],
+                "hooks": new_entries,
             })
-            detail = f"已新增 PostToolUse(matcher={target_matcher_str}) 组"
+            detail = f"已新增 PostToolUse(matcher={target_matcher_str}) 组（validate + inject-lessons）"
 
         if removed_old > 0:
             detail += f"；清理旧 harness hook {removed_old} 条"

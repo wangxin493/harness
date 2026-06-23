@@ -29,6 +29,7 @@ from lib.adapter import Generator  # noqa: E402
 from lib.doctor import Doctor, plan_upgrade  # noqa: E402
 from lib.experience_market import ExperienceMarket  # noqa: E402
 from lib.fixer import Fixer  # noqa: E402
+from lib.global_check import GlobalChecker  # noqa: E402
 from lib.installer import get_installer  # noqa: E402
 from lib.mode_manager import GovernanceMode, ModeManager, ValidationContext  # noqa: E402
 from lib.scanner import IncrementalScanner  # noqa: E402
@@ -69,9 +70,28 @@ def cli() -> None:
 @click.option("--no-generate", is_flag=True,
               help="扫描后跳过自动生成 .harness/generated/*.md")
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 输出 summary")
-def scan_cmd(full: bool, no_generate: bool, as_json: bool) -> None:
-    """扫描项目，产出 dep graph + project context；默认随后自动 generate。"""
+@click.option("--watch", is_flag=True,
+              help="常驻进程：监听 src/ 文件变化，去抖后增量 scan（不自动 generate）")
+@click.option("--debounce", type=float, default=0.5, show_default=True,
+              help="--watch 下，事件聚合到这个秒数才触发一次扫描")
+def scan_cmd(full: bool, no_generate: bool, as_json: bool,
+             watch: bool, debounce: float) -> None:
+    """扫描项目，产出 dep graph + project context；默认随后自动 generate。
+
+    --watch 模式：前台常驻，监听 src/ 下的 .ts/.tsx/.d.ts；不调用 generate
+    （那是 rules/lessons/mode 的派生物，开发动作不会触发它）。
+    """
     project_dir = _resolve_project_dir()
+
+    if watch:
+        if as_json:
+            click.echo("⚠️  --watch 与 --json 互斥，已忽略 --json", err=True)
+        if not no_generate:
+            click.echo("ℹ️  --watch 下不会自动 generate；如需刷新规则文件请单独跑 `harness generate`",
+                       err=True)
+        from lib.watch import watch_loop
+        sys.exit(watch_loop(project_dir, debounce_sec=debounce))
+
     scanner = IncrementalScanner(project_dir=project_dir)
     result = scanner.scan(force_full=full)
     summary = result.summary()
@@ -259,6 +279,77 @@ def fix_cmd(file_path: str, do_apply: bool, as_json: bool) -> None:
             click.echo(f"   [{ins.rule_id}] {ins.file}{line}  {ins.message}")
             if ins.suggestion:
                 click.echo(f"      建议: {ins.suggestion}")
+
+
+# -- check (全项目维度) -----------------------------------------------------
+
+
+@cli.command("check")
+@click.option("--cycles/--no-cycles", default=True, show_default=True,
+              help="是否检查循环依赖")
+@click.option("--unused/--no-unused", default=True, show_default=True,
+              help="是否检查死代码（导出但无引用）")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出问题列表")
+def check_cmd(cycles: bool, unused: bool, as_json: bool) -> None:
+    """跑全项目维度的检查（依赖 scan 产物）。
+
+    单文件维度由 `harness validate` 负责；本命令只跑需要看全图的检查：
+      - cycle           : 文件级循环依赖（Tarjan）
+      - unused-export   : 导出但无人引用，entry_points 豁免
+
+    退出码：发现 error → 2；只有 warning/info → 0。被 mode_manager 过滤后再判定。
+    """
+    project_dir = _resolve_project_dir()
+    mode_manager = _build_mode_manager(project_dir)
+
+    if not mode_manager.should_validate():
+        if as_json:
+            click.echo(json.dumps([], ensure_ascii=False))
+        else:
+            click.echo("⏸️  治理模式为 off，跳过全项目检查")
+        return
+
+    checker = GlobalChecker(project_dir=project_dir)
+    raw = checker.run(enable_cycles=cycles, enable_unused=unused)
+
+    # 没有 scan 产物时给出可执行提示
+    graph_file = project_dir / ".harness" / "context" / "dependency-graph.json"
+    if not graph_file.exists():
+        click.echo("⚠️  尚未扫描，先跑 `harness scan` 再 check。", err=True)
+        sys.exit(1)
+
+    issues = ValidationContext(mode_manager).filter_issues(raw.issues)
+
+    if as_json:
+        click.echo(json.dumps(
+            [_global_issue_to_dict(i) for i in issues],
+            ensure_ascii=False, indent=2,
+        ))
+    else:
+        if not issues:
+            click.echo(f"✅ 全项目检查通过 (mode={mode_manager.current_mode.value})")
+        else:
+            click.echo(f"❌ 共 {len(issues)} 个问题 (mode={mode_manager.current_mode.value}):")
+            for i in issues:
+                click.echo(f"   [{i.severity.upper()}] {i.file}  {i.message}")
+                if i.suggestion:
+                    click.echo(f"      建议: {i.suggestion}")
+
+    if any(mode_manager.should_block(i.severity) for i in issues):
+        sys.exit(2)
+
+
+def _global_issue_to_dict(issue) -> dict:
+    return {
+        "rule_id": issue.rule_id,
+        "severity": issue.severity,
+        "category": issue.category,
+        "message": issue.message,
+        "file": issue.file,
+        "line": issue.line,
+        "suggestion": issue.suggestion,
+        "extra": issue.extra,
+    }
 
 
 # -- mode / status ---------------------------------------------------------
@@ -506,6 +597,98 @@ def lesson_remove(lesson_id: str) -> None:
     else:
         click.echo(f"❌ 未找到 lesson: {lesson_id}", err=True)
         sys.exit(1)
+
+
+@lesson_group.command("match")
+@click.option("--file", "file_path", default="",
+              help="目标文件路径（相对项目根或绝对均可；用于 applies_to 匹配）")
+@click.option("--content-file", "content_file", default=None,
+              help="读这个文件作为待匹配内容（用于关键词命中）；与 --content 互斥")
+@click.option("--content", "content", default=None,
+              help="直接传入内容字符串；与 --content-file 互斥")
+@click.option("--stdin", "from_stdin", is_flag=True,
+              help="从 stdin 读 JSON（PostToolUse hook 用），结构: {file_path, content}")
+@click.option("--limit", default=5, show_default=True, type=int,
+              help="最多返回多少条")
+@click.option("--json", "as_json", is_flag=True,
+              help="以 JSON 输出 [{id,title,severity,applies_to,keywords,content},...]")
+@click.option("--format", "fmt", default="markdown", show_default=True,
+              type=click.Choice(["markdown", "plain"]),
+              help="人读输出格式；--json 时忽略本选项")
+def lesson_match(file_path, content_file, content, from_stdin, limit, as_json, fmt) -> None:
+    """按 file_path + content 召回相关经验（PostToolUse hook 注入用）。
+
+    匹配语义：
+      - applies_to 子串命中 file_path → 路径相关（+2）
+      - keywords 任一作为子串出现在 content 或 file_path → 关键词相关（每条 +1，大小写不敏感）
+      - applies_to 与 keywords 都为空的 lesson → 全局，无条件命中（最低优先级）
+
+    返回按 score 降序，同分按 created_at 倒序（新优先）。
+    """
+    # 互斥校验
+    sources = [bool(content_file), bool(content), bool(from_stdin)]
+    if sum(sources) > 1:
+        click.echo("❌ --content / --content-file / --stdin 三选一", err=True)
+        sys.exit(2)
+
+    actual_content = ""
+    actual_file = file_path
+
+    if from_stdin:
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except json.JSONDecodeError as exc:
+            click.echo(f"❌ 读取 stdin JSON 失败: {exc}", err=True)
+            sys.exit(2)
+        actual_file = payload.get("file_path") or actual_file
+        actual_content = payload.get("content") or ""
+    elif content is not None:
+        actual_content = content
+    elif content_file:
+        try:
+            actual_content = Path(content_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            click.echo(f"❌ 读 {content_file} 失败: {exc}", err=True)
+            sys.exit(2)
+
+    market = _build_market(_resolve_project_dir())
+    lessons = market.match_lessons(
+        file_path=actual_file, content=actual_content, limit=limit,
+    )
+
+    if as_json:
+        from dataclasses import asdict
+        click.echo(json.dumps(
+            [asdict(l) for l in lessons],
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return
+
+    if not lessons:
+        if fmt == "plain":
+            return  # hook stdout 静默
+        click.echo("（无命中经验）")
+        return
+
+    if fmt == "plain":
+        # 给 hook 注入用：title + 简短正文，无 emoji
+        for l in lessons:
+            click.echo(f"- [{l.severity}] {l.title}")
+            body = (l.content or "").strip()
+            if len(body) > 280:
+                body = body[:280] + "…"
+            for line in body.splitlines():
+                click.echo(f"  {line}")
+        return
+
+    # markdown 人读
+    click.echo(f"🎯 命中 {len(lessons)} 条经验:")
+    for l in lessons:
+        kw = ",".join(l.keywords) if l.keywords else "-"
+        applies = ",".join(l.applies_to) if l.applies_to else "-"
+        click.echo(f"   [{l.id}] [{l.severity}] {l.title}")
+        click.echo(f"          applies_to={applies}  keywords={kw}")
 
 
 @cli.command("sync")

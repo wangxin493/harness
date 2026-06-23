@@ -6,12 +6,15 @@ P0 范围（必须 AST，不用正则）：
 - 架构层依赖检查：layer 不在 can_import 白名单 → error
 - 禁用导入检查：rules.yaml imports.forbidden_imports → error
 
-P1 会在此基础上扩展：tsc 集成、命名规范、type-no-any、错误截断等
-（执行清单 #11、设计文档 4.6 节中 _quick_check / _type_check 的扩展）。
+后续扩展：
+- name-similarity：新文件命名与已有组件 / hook / api 高度相似 → info
+- hook-call-misplaced：useXxx() 出现在非组件 / 非 hook 文件，或在分支中 → error
 """
 
 from __future__ import annotations
 
+import difflib
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -60,7 +63,11 @@ class CodeValidator:
         self.forbidden_imports = list(
             self.rules.get("imports", {}).get("forbidden_imports", []) or []
         )
+        self.checks_cfg = (self.rules.get("checks") or {})
         self.parser = TypeScriptParser()
+        # project-context.json：现有组件 / hook / api 的索引（用于命名相似度）
+        # 延迟加载：每次 validate_file 时实时读，确保跟最新 scan 一致
+        self._context_cache: Optional[Dict] = None
 
     # -- 公共 API -----------------------------------------------------------
 
@@ -145,7 +152,187 @@ class CodeValidator:
                     ))
                     break
 
+        # 4) Hook 调用规则（React Rules-of-Hooks 项目层叠加版）
+        if self._cfg_enabled("hook_call_check", default=True):
+            issues.extend(self._check_hook_calls(rel_path, layer, parse_result))
+
+        # 5) 命名相似度（新建 / 改名时与已有 component / hook / api 撞车）
+        if self._cfg_enabled("name_similarity", default=True):
+            issues.extend(self._check_name_similarity(rel_path, layer, parse_result))
+
         return issues
+
+    # -- Hook 调用规则 ------------------------------------------------------
+
+    # layer 是否允许出现 useXxx() 调用
+    _HOOK_CALL_ALLOWED_LAYERS = frozenset({"component", "hook"})
+
+    def _check_hook_calls(
+        self, rel_path: str, layer: str, parse_result
+    ) -> List[Issue]:
+        cfg = self.checks_cfg.get("hook_call_check") or {}
+        excluded = set(cfg.get("excluded_callees") or [])
+
+        issues: List[Issue] = []
+        for hc in parse_result.hook_calls:
+            if hc.callee in excluded:
+                continue
+            # 1) 错层调用：service / type / unknown 层都不该调 useXxx()
+            if layer not in self._HOOK_CALL_ALLOWED_LAYERS:
+                issues.append(Issue(
+                    rule_id="hook-call-misplaced",
+                    severity="error",
+                    category="hook",
+                    message=(
+                        f"hook 调用 {hc.callee}() 出现在 {layer} 层文件，"
+                        f"只允许在 component / hook 层"
+                    ),
+                    file=rel_path,
+                    line=hc.line,
+                    suggestion="把这段逻辑挪到 src/hooks/ 自定义 hook 内，再由组件调用。",
+                ))
+                continue
+            # 2) 在合法层但调用位置不合法：顶层 / 普通函数（非组件、非 useXxx）
+            if hc.in_function_kind == "top_level":
+                issues.append(Issue(
+                    rule_id="hook-call-top-level",
+                    severity="error",
+                    category="hook",
+                    message=f"hook 调用 {hc.callee}() 出现在模块顶层，只能在组件 / 自定义 hook 函数体内",
+                    file=rel_path,
+                    line=hc.line,
+                    suggestion="把它包到一个 useXxx 自定义 hook 或组件函数里。",
+                ))
+                continue
+            host = hc.in_function or ""
+            if host and not (host[:1].isupper() or host.startswith("use")):
+                issues.append(Issue(
+                    rule_id="hook-call-in-plain-func",
+                    severity="error",
+                    category="hook",
+                    message=(
+                        f"hook 调用 {hc.callee}() 出现在普通函数 {host}() 内，"
+                        f"必须由组件（PascalCase）或自定义 hook（use 前缀）持有"
+                    ),
+                    file=rel_path,
+                    line=hc.line,
+                    suggestion=f"把 {host} 改名为 use{host[:1].upper()}{host[1:]}，或挪到组件里。",
+                ))
+                continue
+            # 3) 条件 / 循环里调用 hook
+            if hc.in_branch:
+                issues.append(Issue(
+                    rule_id="hook-call-conditional",
+                    severity="error",
+                    category="hook",
+                    message=f"hook 调用 {hc.callee}() 出现在条件 / 循环里，违反 React Rules-of-Hooks",
+                    file=rel_path,
+                    line=hc.line,
+                    suggestion="把判断挪到 hook 内部（在 hook 里写 if，外部无条件调用）。",
+                ))
+        return issues
+
+    # -- 命名相似度 ---------------------------------------------------------
+
+    def _check_name_similarity(
+        self, rel_path: str, layer: str, parse_result
+    ) -> List[Issue]:
+        cfg = self.checks_cfg.get("name_similarity") or {}
+        threshold = float(cfg.get("threshold", 0.8))
+        # 用户可关闭
+        if threshold <= 0 or threshold >= 1:
+            return []
+
+        ctx = self._load_project_context()
+        if not ctx:
+            return []
+
+        # 当前文件被分到哪类（用 layer 决定看哪份索引）
+        if layer == "component":
+            existing = ctx.get("components") or []
+        elif layer == "hook":
+            existing = ctx.get("hooks") or []
+        elif layer == "service":
+            existing = ctx.get("apis") or []
+        else:
+            return []
+
+        # 取当前文件主导出名（component/hook：第一个；service：所有）
+        my_names = self._extract_primary_export_names(layer, parse_result)
+        if not my_names:
+            return []
+
+        issues: List[Issue] = []
+        for my_name in my_names:
+            for existing_item in existing:
+                existing_name = (existing_item.get("name") or "").strip()
+                existing_file = existing_item.get("file_path") or ""
+                if not existing_name:
+                    continue
+                # 跳过自己（同名同文件 → 不报；同名不同文件 → 走重复实现，severity 提升一档）
+                if existing_file == rel_path and existing_name == my_name:
+                    continue
+                ratio = difflib.SequenceMatcher(None, my_name, existing_name).ratio()
+                if ratio < threshold:
+                    continue
+                same_name = my_name == existing_name
+                issues.append(Issue(
+                    rule_id="name-similarity",
+                    severity="warning" if same_name else "info",
+                    category="naming",
+                    message=(
+                        f"{layer} 命名 {my_name} 与已有 {existing_name} "
+                        f"({existing_file}) 相似度 {ratio:.2f}"
+                        + ("（同名）" if same_name else "")
+                    ),
+                    file=rel_path,
+                    suggestion=(
+                        f"是否要复用已有的 {existing_name}？"
+                        if not same_name else
+                        f"已存在同名 {layer}，请改名或合并到 {existing_file}"
+                    ),
+                ))
+        return issues
+
+    @staticmethod
+    def _extract_primary_export_names(layer: str, parse_result) -> List[str]:
+        names: List[str] = []
+        if layer == "component":
+            for exp in parse_result.exports:
+                # 第一个 returns_jsx 或 default 的 export 视为组件主导出
+                if exp.returns_jsx or exp.kind == "default":
+                    if exp.name and exp.name != "default":
+                        names.append(exp.name)
+                    break
+        elif layer == "hook":
+            for exp in parse_result.exports:
+                if exp.name and exp.name.startswith("use"):
+                    names.append(exp.name)
+                    break
+        elif layer == "service":
+            for exp in parse_result.exports:
+                if exp.kind in ("function", "const", "let", "var", "class", "default"):
+                    if exp.name and exp.name != "default":
+                        names.append(exp.name)
+        return names
+
+    def _load_project_context(self) -> Optional[Dict]:
+        if self._context_cache is not None:
+            return self._context_cache
+        f = self.harness_dir / "context" / "project-context.json"
+        if not f.exists():
+            return None
+        try:
+            self._context_cache = json.loads(f.read_text(encoding="utf-8"))
+            return self._context_cache
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _cfg_enabled(self, name: str, default: bool) -> bool:
+        sub = self.checks_cfg.get(name)
+        if isinstance(sub, dict) and "enabled" in sub:
+            return bool(sub["enabled"])
+        return default
 
     # -- 层级推断 -----------------------------------------------------------
 

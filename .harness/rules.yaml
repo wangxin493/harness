@@ -91,3 +91,28 @@ experience_market:
   auto_push: false      # (P2)
   max_lessons: 10       # (P2) 当前 adapter 写死 limit=20
   min_score: 0.3        # (P2) 当前 ExperienceMarket.DEFAULT_MIN_SCORE 写死 0.3
+
+# 校验扩展（单文件 + 全项目维度），都可单独开关
+checks:
+  # 单文件维度 —— validator 接入，PostToolUse hook 会跑
+  hook_call_check:
+    enabled: true
+    # 这些 callee 不视为 React hook（业务里同名的非 React 函数）
+    excluded_callees: []
+  name_similarity:
+    enabled: true
+    # SequenceMatcher.ratio() 阈值，0.8 = 「UserTable vs UserList」会命中
+    threshold: 0.8
+  # 全项目维度 —— harness check 显式触发；不在 PostToolUse 跑（要看全图）
+  cycles:
+    enabled: true
+  unused_exports:
+    enabled: true
+    # fnmatch 模式，命中的文件不报 unused-export
+    entry_points:
+      - "src/index.ts"
+      - "src/index.tsx"
+      - "src/pages/**"
+      - "src/**/index.ts"
+    # type 层导出常被 type-only import，依赖图里不进，默认豁免
+    exempt_type_layer: true

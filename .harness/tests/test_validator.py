@@ -1,5 +1,6 @@
 """validator 单元测试。"""
 
+import json
 import shutil
 import tempfile
 import textwrap
@@ -30,6 +31,12 @@ imports:
   forbidden_imports:
     - "@/services"
     - "@/api/mockApi"
+checks:
+  hook_call_check:
+    enabled: true
+  name_similarity:
+    enabled: true
+    threshold: 0.8
 """)
 
 
@@ -151,6 +158,241 @@ class TestCodeValidator(unittest.TestCase):
         )
         issues = self.fx.validator().validate_file("src/components/Btn.tsx")
         self.assertEqual(issues, [])
+
+
+# ============================================================================
+# Hook 调用规则
+# ============================================================================
+
+
+class TestHookCallCheck(unittest.TestCase):
+    def setUp(self):
+        self.fx = ValidatorFixture()
+
+    def tearDown(self):
+        self.fx.cleanup()
+
+    def test_hook_call_in_service_layer_blocked(self):
+        # service 层文件不能调用 useXxx
+        self.fx.write(
+            "src/api/userService.ts",
+            "import { useState } from 'react';\n"
+            "export function fetchUser() { return useState(0); }\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/userService.ts")
+        misplaced = [i for i in issues if i.rule_id == "hook-call-misplaced"]
+        self.assertEqual(len(misplaced), 1)
+        self.assertEqual(misplaced[0].severity, "error")
+
+    def test_hook_call_in_component_ok(self):
+        self.fx.write(
+            "src/components/Foo.tsx",
+            "import { useState } from 'react';\n"
+            "export function Foo() {\n"
+            "  const [x] = useState(0);\n"
+            "  return <div>{x}</div>;\n"
+            "}\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Foo.tsx")
+        hook_issues = [i for i in issues if i.category == "hook"]
+        self.assertEqual(hook_issues, [])
+
+    def test_hook_call_in_custom_hook_ok(self):
+        self.fx.write(
+            "src/hooks/useFoo.ts",
+            "import { useState } from 'react';\n"
+            "export const useFoo = () => useState(0);\n",
+        )
+        issues = self.fx.validator().validate_file("src/hooks/useFoo.ts")
+        hook_issues = [i for i in issues if i.category == "hook"]
+        self.assertEqual(hook_issues, [])
+
+    def test_hook_call_top_level_blocked(self):
+        self.fx.write(
+            "src/components/Foo.tsx",
+            "import { useState } from 'react';\n"
+            "const x = useState(0);\n"
+            "export const Foo = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Foo.tsx")
+        top = [i for i in issues if i.rule_id == "hook-call-top-level"]
+        self.assertEqual(len(top), 1)
+
+    def test_hook_call_in_plain_function_blocked(self):
+        # 在 component 文件里有个普通函数 helper 调用 useState
+        self.fx.write(
+            "src/components/Foo.tsx",
+            "import { useState } from 'react';\n"
+            "function helper() { return useState(0); }\n"
+            "export const Foo = () => { helper(); return <div/>; };\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Foo.tsx")
+        plain = [i for i in issues if i.rule_id == "hook-call-in-plain-func"]
+        self.assertEqual(len(plain), 1)
+
+    def test_hook_call_conditional_blocked(self):
+        self.fx.write(
+            "src/components/Foo.tsx",
+            "import { useState } from 'react';\n"
+            "export function Foo(p: { ok: boolean }) {\n"
+            "  if (p.ok) { const [x] = useState(0); }\n"
+            "  return <div/>;\n"
+            "}\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Foo.tsx")
+        cond = [i for i in issues if i.rule_id == "hook-call-conditional"]
+        self.assertEqual(len(cond), 1)
+
+    def test_excluded_callee_not_blocked(self):
+        # 写一个临时 rules.yaml 把 useRouter 放进 excluded_callees
+        rules = textwrap.dedent("""\
+        architecture:
+          layers:
+            - name: service
+              paths: ["src/api/"]
+              can_import: ["type"]
+        imports:
+          forbidden_imports: []
+        checks:
+          hook_call_check:
+            enabled: true
+            excluded_callees: ["useRouter"]
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/api/foo.ts",
+            "function f() { return useRouter(); }\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/foo.ts")
+        hook_issues = [i for i in issues if i.category == "hook"]
+        self.assertEqual(hook_issues, [])
+
+    def test_disabled_check_skips(self):
+        rules = textwrap.dedent("""\
+        architecture:
+          layers:
+            - name: service
+              paths: ["src/api/"]
+              can_import: ["type"]
+        imports:
+          forbidden_imports: []
+        checks:
+          hook_call_check:
+            enabled: false
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/api/foo.ts",
+            "import { useState } from 'react';\n"
+            "function f() { return useState(0); }\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/foo.ts")
+        hook_issues = [i for i in issues if i.category == "hook"]
+        self.assertEqual(hook_issues, [])
+
+
+# ============================================================================
+# 命名相似度
+# ============================================================================
+
+
+class TestNameSimilarity(unittest.TestCase):
+    def setUp(self):
+        self.fx = ValidatorFixture()
+        # 模拟 scan 产物：已有 UserTable / fetchUserService / useTodos
+        ctx_dir = self.fx.root / ".harness" / "context"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        (ctx_dir / "project-context.json").write_text(json.dumps({
+            "schema_version": 1,
+            "components": [
+                {"name": "UserTable", "file_path": "src/components/UserTable.tsx"},
+            ],
+            "hooks": [
+                {"name": "useTodos", "file_path": "src/hooks/useTodos.ts"},
+            ],
+            "apis": [
+                {"name": "fetchUserService", "file_path": "src/api/userService.ts"},
+            ],
+            "types": [],
+            "files": [],
+        }), encoding="utf-8")
+
+    def tearDown(self):
+        self.fx.cleanup()
+
+    def test_similar_component_name_warning(self):
+        self.fx.write(
+            "src/components/UserTables.tsx",
+            "export const UserTables = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTables.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(len(sim), 1)
+        self.assertIn("UserTable", sim[0].message)
+
+    def test_same_name_different_file_warning(self):
+        # 同名（UserTable）但在不同文件 → severity=warning
+        self.fx.write(
+            "src/components/UserTable2.tsx",
+            "export const UserTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTable2.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(len(sim), 1)
+        self.assertEqual(sim[0].severity, "warning")
+        self.assertIn("同名", sim[0].message)
+
+    def test_dissimilar_name_no_warning(self):
+        self.fx.write(
+            "src/components/Dashboard.tsx",
+            "export const Dashboard = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Dashboard.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(sim, [])
+
+    def test_self_no_false_positive(self):
+        # 已在 context 里的文件再次校验自己 → 不报相似度
+        self.fx.write(
+            "src/components/UserTable.tsx",
+            "export const UserTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTable.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(sim, [])
+
+    def test_hook_similarity(self):
+        self.fx.write(
+            "src/hooks/useTodo.ts",  # 与 useTodos 仅差一个 s
+            "export const useTodo = () => 1;\n",
+        )
+        issues = self.fx.validator().validate_file("src/hooks/useTodo.ts")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(len(sim), 1)
+
+    def test_disabled_threshold(self):
+        # threshold=0 关闭
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("threshold: 0.8", "threshold: 0")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/components/UserTables.tsx",
+            "export const UserTables = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTables.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(sim, [])
+
+    def test_no_context_no_check(self):
+        # 把 project-context.json 删了 → 无 issue（不报错）
+        (self.fx.root / ".harness" / "context" / "project-context.json").unlink()
+        self.fx.write(
+            "src/components/UserTables.tsx",
+            "export const UserTables = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTables.tsx")
+        sim = [i for i in issues if i.rule_id == "name-similarity"]
+        self.assertEqual(sim, [])
 
 
 if __name__ == "__main__":

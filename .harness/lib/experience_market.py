@@ -223,6 +223,57 @@ class ExperienceMarket:
 
     # -- 公共 API：检索 ------------------------------------------------------
 
+    def match_lessons(
+        self,
+        file_path: str = "",
+        content: str = "",
+        limit: int = 10,
+    ) -> List[Lesson]:
+        """按文件路径 + 新内容召回相关 lesson（PostToolUse 动态注入用）。
+
+        匹配语义（与 get_relevant_lessons 不同，这套是「触发型」二值匹配，
+        不算软分数，专门服务 hook 注入场景）：
+
+        - `applies_to`：任一项是 `file_path` 的子串 → 路径命中，权重 +2
+        - `keywords`：任一项作为子串出现在 `content` 或 `file_path` 中
+          （大小写不敏感）→ 关键词命中，每条 +1
+        - 两者都为空的 lesson → 全局 lesson，无条件命中（score=1，最低优先级）
+        - 过期 lesson 直接跳过
+
+        排序：score 降序；同分按 created_at 字典序倒序（新优先）。
+        """
+        file_lower = (file_path or "").lower()
+        content_lower = (content or "").lower()
+        haystack = content_lower + " " + file_lower
+
+        matched: List[tuple] = []
+        for lesson in self.list_lessons():
+            if self._is_expired(lesson):
+                continue
+
+            score = 0
+            if not lesson.applies_to and not lesson.keywords:
+                # 全局 lesson：无条件命中（最低优先级）
+                score = 1
+            else:
+                # 路径匹配（子串，命中即停，与 Lesson.matches 一致）
+                if file_path and lesson.applies_to:
+                    for pattern in lesson.applies_to:
+                        if pattern and pattern in file_path:
+                            score += 2
+                            break
+                # 关键词匹配（每个独立计分，大小写不敏感）
+                for kw in lesson.keywords:
+                    if kw and kw.lower() in haystack:
+                        score += 1
+
+            if score > 0:
+                matched.append((score, lesson))
+
+        # score 降序、created_at 倒序
+        matched.sort(key=lambda x: (x[0], x[1].created_at), reverse=True)
+        return [l for _, l in matched[:limit]]
+
     def get_relevant_lessons(
         self,
         context: Dict[str, Any],
