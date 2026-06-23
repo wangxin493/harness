@@ -115,6 +115,7 @@ class Doctor:
         report.checks.append(self._check_rules_yaml())
         report.checks.append(self._check_dependency_graph())
         report.checks.append(self._check_mode_config())
+        report.checks.append(self._check_readme_drift())
         report.checks.append(self._check_git_repo())
         report.checks.append(self._check_shared_dir())
         return report
@@ -287,6 +288,68 @@ class Doctor:
                 message=f"mode-config.json 损坏: {exc}",
                 suggestion="删除后用 harness mode 重新设置",
             )
+
+    def _check_readme_drift(self) -> CheckResult:
+        """.harness/README.md 是否与当前 rules/lessons/mode 一致。
+
+        逻辑：把 README 头部 `<!-- sources: name@sha8 ... -->` 解析出来，
+        与 Generator._compute_source_hashes() 现场计算的指纹比对：
+        - README 不存在 → info（首次安装还没 generate）
+        - 没有 sources 注释 → warning（被人手改坏了，建议重生成）
+        - 有 sources 但和当前不一致 → warning，列出哪几项漂了
+        - 一致 → ok
+        """
+        readme = self.harness_dir / "README.md"
+        if not readme.exists():
+            return CheckResult(
+                name="readme-drift",
+                severity="info",
+                message=".harness/README.md 不存在",
+                suggestion="运行: harness generate",
+            )
+
+        try:
+            content = readme.read_text(encoding="utf-8")
+        except OSError as exc:
+            return CheckResult(
+                name="readme-drift",
+                severity="warning",
+                message=f"读 README.md 失败: {exc}",
+                suggestion="运行: harness generate 重生成",
+            )
+
+        # 延迟 import：避免 doctor 单测必须依赖 adapter 的全部依赖
+        from lib.adapter import Generator, ReadmeAdapter
+
+        recorded = ReadmeAdapter.extract_source_hashes(content)
+        if not recorded:
+            return CheckResult(
+                name="readme-drift",
+                severity="warning",
+                message="README.md 缺 sources 指纹注释（可能被手改坏）",
+                suggestion="运行: harness generate 重生成（手写区会保留）",
+            )
+
+        current = Generator(harness_dir=self.harness_dir)._compute_source_hashes()
+        diffs = []
+        # 用并集，新增 / 缺失的源都算漂
+        for key in sorted(set(recorded) | set(current)):
+            if recorded.get(key) != current.get(key):
+                diffs.append(f"{key}({recorded.get(key, '?')}→{current.get(key, '?')})")
+
+        if diffs:
+            return CheckResult(
+                name="readme-drift",
+                severity="warning",
+                message=f"README.md 已过期: {', '.join(diffs)}",
+                suggestion="运行: harness generate 重生成（手写区会保留）",
+            )
+
+        return CheckResult(
+            name="readme-drift",
+            severity="ok",
+            message="README.md 与当前规则/经验/模式一致",
+        )
 
     def _check_git_repo(self) -> CheckResult:
         try:

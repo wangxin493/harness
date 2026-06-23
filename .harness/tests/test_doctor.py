@@ -211,6 +211,50 @@ class TestDoctorChecks(unittest.TestCase):
         self.assertEqual(c.severity, "ok")
         self.assertIn("2 条 lesson", c.message)
 
+    # -- README drift -------------------------------------------------------
+
+    def test_readme_missing_is_info(self):
+        # 默认 fixture 不写 README → info（建议跑 generate）
+        report = self.fx.doctor().run()
+        c = self._by_name(report, "readme-drift")
+        self.assertEqual(c.severity, "info")
+        self.assertIn("不存在", c.message)
+
+    def test_readme_in_sync_is_ok(self):
+        self.fx.write_rules()
+        # 用 Generator 真生成一次，README 与当前源同步
+        from lib.adapter import Generator
+        Generator(harness_dir=self.fx.harness_dir, version="2.0.0-test").generate_all()
+
+        report = self.fx.doctor().run()
+        c = self._by_name(report, "readme-drift")
+        self.assertEqual(c.severity, "ok",
+                         f"expected ok, got {c.severity}: {c.message}")
+
+    def test_readme_drift_when_rules_change(self):
+        self.fx.write_rules()
+        from lib.adapter import Generator
+        Generator(harness_dir=self.fx.harness_dir, version="2.0.0-test").generate_all()
+
+        # 改 rules.yaml 但不重生成 README
+        (self.fx.harness_dir / "rules.yaml").write_text(
+            VALID_RULES_YAML + "\n# drifted\n", encoding="utf-8")
+
+        report = self.fx.doctor().run()
+        c = self._by_name(report, "readme-drift")
+        self.assertEqual(c.severity, "warning")
+        self.assertIn("rules.yaml", c.message)
+        self.assertIn("harness generate", c.suggestion)
+
+    def test_readme_without_sources_comment_warns(self):
+        # 写一个没有 sources 注释的 README
+        (self.fx.harness_dir / "README.md").write_text(
+            "# something a human wrote\n", encoding="utf-8")
+        report = self.fx.doctor().run()
+        c = self._by_name(report, "readme-drift")
+        self.assertEqual(c.severity, "warning")
+        self.assertIn("sources 指纹", c.message)
+
 
 # ---------------------------------------------------------------------------
 # 报告聚合

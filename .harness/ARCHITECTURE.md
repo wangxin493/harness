@@ -79,6 +79,7 @@
 ├── .venv/                            # 独立 venv,首次 install 时建(gitignored)
 ├── .gitignore
 ├── ARCHITECTURE.md                   # 本文件
+├── README.md                         # 人读版规则说明书(自动区+手写区,由 harness generate 产出)
 └── VERIFY.md                         # 人肉验证手册,10 章对应 10 个功能链路
 
 # ────────── 项目根的 Harness 触点 ──────────
