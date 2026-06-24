@@ -15,7 +15,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # 让 `lib.xxx` 能被 import：CLI 通过 commands/harness wrapper 启动时
 # .harness/ 已加入 sys.path；这里兜底一下，便于直接 `python lib/cli.py`。
@@ -33,6 +33,11 @@ from lib.global_check import GlobalChecker  # noqa: E402
 from lib.installer import get_installer  # noqa: E402
 from lib.mode_manager import GovernanceMode, ModeManager, ValidationContext  # noqa: E402
 from lib.scanner import IncrementalScanner  # noqa: E402
+from lib.template import (  # noqa: E402
+    TemplateError,
+    TemplateGenerator,
+    supported_kinds,
+)
 from lib.validator import CodeValidator  # noqa: E402
 
 
@@ -279,6 +284,70 @@ def fix_cmd(file_path: str, do_apply: bool, as_json: bool) -> None:
             click.echo(f"   [{ins.rule_id}] {ins.file}{line}  {ins.message}")
             if ins.suggestion:
                 click.echo(f"      建议: {ins.suggestion}")
+
+
+# -- new (模板生成) --------------------------------------------------------
+
+
+@cli.command("new")
+@click.argument("kind", type=click.Choice(supported_kinds()))
+@click.argument("name", type=str)
+@click.option("--force", is_flag=True,
+              help="目标文件已存在或同名冲突时,仍强制创建/覆盖")
+@click.option("--path", "path_override", default=None,
+              help="自定义落盘目录(POSIX 相对,默认从 rules.yaml 取)")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出结果")
+def new_cmd(kind: str, name: str, force: bool,
+            path_override: Optional[str], as_json: bool) -> None:
+    """生成已符合规则的新文件骨架:component / page / hook / service / type。
+
+    示例:
+      harness new component UserCard      → src/components/UserCard.tsx
+      harness new page TodoListPage       → src/pages/TodoListPage.tsx
+      harness new hook useTodos           → src/hooks/useTodos.ts
+      harness new service userService     → src/api/userService.ts
+      harness new type User               → src/types/User.ts
+
+    冲突保护:目标文件已存在或 project-context.json 命中同名 → 拒绝,
+    用 --force 强制创建。命名错误会直接给建议名,不落盘。
+    """
+    project_dir = _resolve_project_dir()
+    gen = TemplateGenerator(project_dir=project_dir)
+
+    try:
+        result = gen.generate(
+            kind=kind, name=name, force=force, path_override=path_override,
+        )
+    except TemplateError as exc:
+        if as_json:
+            click.echo(json.dumps(
+                {"error": str(exc)}, ensure_ascii=False, indent=2,
+            ))
+        else:
+            click.echo(f"❌ {exc}", err=True)
+        sys.exit(2)
+
+    if as_json:
+        click.echo(json.dumps({
+            "file": result.file,
+            "kind": result.kind,
+            "name": result.name,
+            "written": result.written,
+            "skipped_reason": result.skipped_reason,
+            "warnings": result.warnings,
+        }, ensure_ascii=False, indent=2))
+        if not result.written:
+            sys.exit(1)
+        return
+
+    if not result.written:
+        click.echo(f"⏸️  未创建:{result.skipped_reason}", err=True)
+        sys.exit(1)
+
+    click.echo(f"✅ 已创建 {kind}:{result.file}")
+    for w in result.warnings:
+        click.echo(f"   ⚠️  {w}")
+    click.echo("   下一步:打开文件填写 TODO;保存时 PostToolUse hook 会校验。")
 
 
 # -- check (全项目维度) -----------------------------------------------------

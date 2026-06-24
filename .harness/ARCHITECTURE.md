@@ -1,7 +1,7 @@
 # Harness 2.0 架构总览
 
 > 由人手维护(不在 `harness scan` 自动产物里);代码动了记得回来同步。
-> 最后更新:2026-06-23(新增 lesson 动态注入 hook + scan --watch + 全项目 check + hook 调用 / 命名相似 / 循环 / 死代码)
+> 最后更新:2026-06-24(新增 harness new 模板生成器 + lesson 动态注入 hook + scan --watch + 全项目 check + hook 调用 / 命名相似 / 循环 / 死代码)
 
 ---
 
@@ -22,8 +22,9 @@
 │
 ├── lib/                              # ─────────── 核心 Python 库 ───────────
 │   ├── __init__.py                   # 空,Python 包标记
-│   ├── cli.py                        # Click 子命令路由:scan / validate / check / fix / mode / status /
-│   │                                 # lesson / sync / generate / doctor / upgrade / install / uninstall
+│   ├── cli.py                        # Click 子命令路由:scan / validate / check / fix / new /
+│   │                                 # mode / status / lesson / sync / generate / doctor /
+│   │                                 # upgrade / install / uninstall
 │   ├── scanner.py                    # 增量扫 src/,按 mtime+sha1 跳过未变文件;
 │   │                                 # 产出 project-context / dependency-graph / scan-metadata
 │   │                                 # FileRecord 携带 hook_calls(metadata schema_version=2)
@@ -38,6 +39,9 @@
 │   │                                 # 按模式过滤 Issue.severity,读写 mode-config.json
 │   ├── fixer.py                      # 自动修复 import-forbidden:@/services/foo → @/api/foo,
 │   │                                 # --apply 走 git apply 落盘
+│   ├── template.py                   # harness new <kind> <name> 模板生成器:
+│   │                                 # 5 种 kind(component/page/hook/service/type),
+│   │                                 # 命名校验 + 建议名 + 冲突保护(目标文件 / context 同名)
 │   ├── experience_market.py          # 经验市场 CRUD:lesson add/list/show/remove +
 │   │                                 # match_lessons(file_path,content) 触发型匹配 +
 │   │                                 # .harness-shared/ 同步,Markdown+YAML frontmatter 存储
@@ -48,7 +52,7 @@
 │   └── doctor.py                     # 体检:python / venv / 三方依赖 / rules.yaml /
 │                                     # dependency-graph / mode-config / git / 共享盘
 │
-├── tests/                            # 238 个单测,覆盖所有 lib 模块 + cli + hook 协议
+├── tests/                            # 281 个单测,覆盖所有 lib 模块 + cli + hook 协议
 │   ├── _setup.py                     # 测试 PYTHONPATH 注入
 │   ├── test_ast_parser.py            # 含 hook_calls 抽取(11 个新)
 │   ├── test_scanner.py
@@ -58,6 +62,8 @@
 │   ├── test_check_cli.py             # harness check CLI 集成(7 个)
 │   ├── test_mode_manager.py
 │   ├── test_fixer.py
+│   ├── test_template.py              # template 单元测试(30 个:命名校验 + 建议 + 生成 + 冲突)
+│   ├── test_new_cli.py               # harness new CLI 集成测试(13 个)
 │   ├── test_experience_market.py     # 含 match_lessons 触发型匹配测试
 │   ├── test_lesson_match_cli.py      # harness lesson match 子命令测试
 │   ├── test_inject_lessons_hook.py   # inject-lessons.sh 端到端测试
@@ -181,6 +187,7 @@ sequenceDiagram
 
 | 防线 | 触发时机 | 作用 |
 |---|---|---|
+| 模板生成: harness new | 主动调用 | **前置预防** — 一条命令产出已符合 5+ 类规则的骨架,Agent 不用记规则 |
 | 系统提示词注入 | 会话启动一次 | **预防** — Agent 在生成阶段就遵守规则,不需要事后改;lesson 仅显示标题索引,正文按需注入避免撑提示词 |
 | PostToolUse: validate | 每次 Write/Edit | **兜底拦截** — 违规 stderr decision:block + exit 2,Agent 自纠;含架构 / 导入 / hook 调用 / 命名相似 5 大类 |
 | PostToolUse: inject-lessons | 每次 Write/Edit | **按需注入** — 按 file_path + content 命中相关 lesson,通过 additionalContext 推给 Agent |
