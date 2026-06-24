@@ -131,6 +131,11 @@ class InitResolver:
 
     # ---- 别名 ------------------------------------------------------------
 
+    # 当 rules.yaml 没显式配 scanner.import_alias(es) 时，scanner 内部会按
+    # "@/" → source_root 当兜底。这里的"隐式基线"只用作"探测值是否等于默认"
+    # 的对比锚点，不写进 plan.rules（写进去会冒充用户显式配置）。
+    _IMPLICIT_DEFAULT_ALIAS = ("@", "src")
+
     def _resolve_aliases(self, plan: ProposedPlan) -> None:
         """tsconfig.json paths → scanner.import_aliases。
 
@@ -138,7 +143,7 @@ class InitResolver:
         但记一条 adopted_notes 告知用户。多别名场景一律采纳全部。
         """
         scanner = plan.rules.setdefault("scanner", {})
-        default_aliases = self._normalize_aliases(
+        explicit_default = self._normalize_aliases(
             scanner.get("import_aliases"), scanner.get("import_alias"),
         )
         probed = [
@@ -147,8 +152,12 @@ class InitResolver:
         ]
         if not probed:
             return
-        # 完全等价？
-        if self._aliases_equal(probed, default_aliases):
+        # 显式默认存在 → 直接对比；不存在 → 看探测值是否就是隐式基线 @/* → src/*
+        if explicit_default:
+            equal = self._aliases_equal(probed, explicit_default)
+        else:
+            equal = (probed == [self._IMPLICIT_DEFAULT_ALIAS])
+        if equal:
             plan.adopted_notes.append(
                 f"别名沿用默认（{self._fmt_aliases(probed)}）",
             )
@@ -173,6 +182,10 @@ class InitResolver:
     def _normalize_aliases(
         many: Optional[Any], one: Optional[Any],
     ) -> List[tuple]:
+        """把 rules.yaml 里的 import_aliases / import_alias 拍平成 [(prefix, target)]。
+
+        没显式配返回空列表（caller 自己判定怎么处理隐式基线）。
+        """
         out: List[tuple] = []
         if isinstance(many, list):
             for item in many:
@@ -186,9 +199,6 @@ class InitResolver:
             t = str(one.get("target") or "").rstrip("/")
             if p and t:
                 out.append((p, t))
-        if not out:
-            # rules.yaml 没显式配 → scanner 默认 "@/" → source_root
-            out.append(("@", "src"))
         return out
 
     @staticmethod
@@ -352,7 +362,8 @@ class InitResolver:
             plan.info_notes.append("检测到 ESLint 配置（与 harness 互不干扰）")
         if not r.gitignore_has_harness:
             plan.info_notes.append(
-                "建议把 `.harness/.venv` 与 `.harness/context` 加入 .gitignore",
+                "建议把 `.harness/.venv` 加入 .gitignore"
+                "（context/ 与 generated/ 是否入库由项目自定）",
             )
         # forbidden_imports / rewrites 留空（Q5=A）
         plan.info_notes.append(

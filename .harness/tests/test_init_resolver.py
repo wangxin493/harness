@@ -127,6 +127,24 @@ class AliasResolutionTests(unittest.TestCase):
         prefixes = {a["prefix"] for a in aliases}
         self.assertEqual(prefixes, {"@/", "~/"})
 
+    def test_explicit_default_diff_from_probe_adopts_probe(self) -> None:
+        """rules.yaml 显式配了 import_alias，探测到不同值 → 采纳探测值。
+
+        回归：旧实现把"无显式默认"伪装成 [(@,src)]，导致这一支永远走"等价"
+        分支；现在显式默认存在时严格对比。
+        """
+        rules = _default_rules()
+        rules["scanner"]["import_alias"] = {"prefix": "@/", "target": "src/"}
+        report = _make_report(aliases=[
+            AliasFinding(prefix="~/", target="app/", source_file="tsconfig.json"),
+        ])
+        plan = resolve_init(rules, report)
+        self.assertEqual(plan.conflicts, [])
+        self.assertEqual(
+            plan.rules["scanner"]["import_alias"],
+            {"prefix": "~/", "target": "app/"},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Layer 路径
