@@ -80,17 +80,14 @@ case "$FILE_PATH" in
     /*)               REL_PATH="$FILE_PATH" ;;
     *)                REL_PATH="$FILE_PATH" ;;
 esac
-case "$REL_PATH" in
-    src/*) ;;
-    *) exit 0 ;;
-esac
-case "$REL_PATH" in
-    *.ts|*.tsx|*.d.ts) ;;
-    *) exit 0 ;;
-esac
+# 是否在 harness 关心的范围内由 CLI 判断（读 rules.yaml scanner.*），
+# shell 不再写死 src/*.ts/*.tsx/*.d.ts。
+export HARNESS_PROJECT_DIR="$PROJECT_DIR"
+if ! "$HARNESS_BIN" should-validate "$REL_PATH" >/dev/null 2>&1; then
+    exit 0
+fi
 
 # --- 调 harness lesson match --stdin -----------------------------------
-export HARNESS_PROJECT_DIR="$PROJECT_DIR"
 # 把 PARSED 转成 lesson match --stdin 所期望的格式（已经一致），传相对路径过去
 PAYLOAD=$(printf '%s' "$PARSED" | python3 -c "
 import json, sys

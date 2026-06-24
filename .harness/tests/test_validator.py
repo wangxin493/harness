@@ -31,6 +31,9 @@ imports:
   forbidden_imports:
     - "@/services"
     - "@/api/mockApi"
+  forbidden_suggestions:
+    "@/services": "@/services 路径不存在，请使用 @/api"
+    "@/api/mockApi": "禁止直接耦合 mock 实现，请通过 @/api/<service> 访问"
 checks:
   hook_call_check:
     enabled: true

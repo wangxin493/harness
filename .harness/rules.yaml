@@ -51,9 +51,19 @@ imports:
     - "@/api"
     - "@/pages"
     - "@/components"
-  forbidden_imports:
-    - "@/services"      # 历史误用，应使用 @/api
-    - "@/api/mockApi"   # 不允许直接耦合 mock 实现
+  # 项目自行追加历史误用 / 禁用入口；默认空。例：
+  # forbidden_imports:
+  #   - "@/legacy"
+  #   - "@/api/mockApi"
+  forbidden_imports: []
+  # 命中 forbidden_imports 时给 Agent 的修复提示（可选；按前缀匹配，最长优先）。例：
+  # forbidden_suggestions:
+  #   "@/legacy": "@/legacy 路径已废弃，请改用 @/api"
+  forbidden_suggestions: {}
+  # fixer.py 自动改写映射：旧前缀 → 新前缀。harness fix --apply 时使用。例：
+  # rewrites:
+  #   "@/legacy": "@/api"
+  rewrites: {}
 
 # 扫描器配置
 scanner:
@@ -109,9 +119,12 @@ checks:
   unused_exports:
     enabled: true
     # fnmatch 模式，命中的文件不报 unused-export
+    # 默认覆盖常见 SPA / Node 项目的入口；其它项目按需追加
     entry_points:
       - "src/index.ts"
       - "src/index.tsx"
+      - "src/main.ts"
+      - "src/main.tsx"
       - "src/pages/**"
       - "src/**/index.ts"
     # type 层导出常被 type-only import，依赖图里不进，默认豁免

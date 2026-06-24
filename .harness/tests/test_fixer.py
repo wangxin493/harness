@@ -32,6 +32,8 @@ imports:
   forbidden_imports:
     - "@/services"
     - "@/api/mockApi"
+  rewrites:
+    "@/services": "@/api"
 """)
 
 

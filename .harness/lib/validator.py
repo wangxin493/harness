@@ -63,6 +63,16 @@ class CodeValidator:
         self.forbidden_imports = list(
             self.rules.get("imports", {}).get("forbidden_imports", []) or []
         )
+        # 项目可在 rules.yaml.imports.forbidden_suggestions 给出按前缀的修复
+        # 提示（最长前缀优先）；缺省时走通用 fallback。
+        raw_suggestions = (
+            self.rules.get("imports", {}).get("forbidden_suggestions") or {}
+        )
+        self.forbidden_suggestions: Dict[str, str] = {}
+        if isinstance(raw_suggestions, dict):
+            for k, v in raw_suggestions.items():
+                if isinstance(k, str) and isinstance(v, str) and k:
+                    self.forbidden_suggestions[k.rstrip("/")] = v
         self.checks_cfg = (self.rules.get("checks") or {})
         self.parser = TypeScriptParser()
         # project-context.json：现有组件 / hook / api 的索引（用于命名相似度）
@@ -368,13 +378,29 @@ class CodeValidator:
 
     # -- 建议文案 -----------------------------------------------------------
 
-    @staticmethod
-    def _suggest_for_forbidden(source: str) -> str:
-        if source.startswith("@/services"):
-            return "@/services 路径不存在，请使用 @/api"
-        if source.startswith("@/api/mockApi"):
-            return "禁止直接耦合 mock 实现，请通过 @/api/<service> 访问"
-        return "请改用允许的导入路径（见 rules.yaml imports.allowed_prefixes）"
+    def _suggest_for_forbidden(self, source: str) -> str:
+        """按 rules.imports.forbidden_suggestions 最长前缀匹配；缺省给通用提示。
+
+        允许 key 为完整 source（精确匹配）或路径前缀（startswith("key/")）。
+        例：rules.yaml
+            imports:
+              forbidden_suggestions:
+                "@/legacy": "@/legacy 已废弃，请改用 @/api"
+        """
+        candidates = []
+        for prefix, msg in self.forbidden_suggestions.items():
+            if source == prefix or source.startswith(prefix + "/"):
+                candidates.append((len(prefix), msg))
+        if candidates:
+            candidates.sort(reverse=True)
+            return candidates[0][1]
+        allowed = (self.rules.get("imports") or {}).get("allowed_prefixes") or []
+        if allowed:
+            return (
+                "请改用允许的导入路径，可选前缀："
+                + ", ".join(allowed)
+            )
+        return "请改用 rules.yaml imports.allowed_prefixes 中允许的导入路径"
 
     # -- 工具 ---------------------------------------------------------------
 

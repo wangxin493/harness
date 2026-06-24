@@ -30,8 +30,10 @@ from lib.doctor import Doctor, plan_upgrade  # noqa: E402
 from lib.experience_market import ExperienceMarket  # noqa: E402
 from lib.fixer import Fixer  # noqa: E402
 from lib.global_check import GlobalChecker  # noqa: E402
+from lib.init_resolver import InitResolver  # noqa: E402
 from lib.installer import get_installer  # noqa: E402
 from lib.mode_manager import GovernanceMode, ModeManager, ValidationContext  # noqa: E402
+from lib.probe import probe_project  # noqa: E402
 from lib.scanner import IncrementalScanner  # noqa: E402
 from lib.template import (  # noqa: E402
     TemplateError,
@@ -206,6 +208,94 @@ def validate_cmd(file_path: str, as_json: bool) -> None:
     # 非零退出码：根据 mode 决定（relaxed 仅 error 拦截，strict 拦截一切非 info）
     if any(mode_manager.should_block(i.severity) for i in issues):
         sys.exit(2)
+
+
+@cli.command("should-validate")
+@click.argument("file_path", type=str)
+def should_validate_cmd(file_path: str) -> None:
+    """判断指定文件是否应当走 harness validate（供 hook shell 调用）。
+
+    退出码：
+      0  → 应该校验（hook 接着调 `harness validate`）
+      1  → 跳过（不在 scanner.source_root 内 / 扩展名不在 include_extensions
+           / 命中 exclude_globs / 治理模式为 off）
+
+    刻意不打印任何东西：hook 用 exit code 决策，输出会污染 hookSpecificOutput。
+    """
+    project_dir = _resolve_project_dir()
+    if _file_should_validate(project_dir, file_path):
+        sys.exit(0)
+    sys.exit(1)
+
+
+def _file_should_validate(project_dir: Path, file_path: str) -> bool:
+    """判断文件是否在 rules.yaml scanner 约束的范围内（hook 用）。
+
+    流程：
+    1) 治理模式 off → False
+    2) 转项目相对路径（绝对路径剥前缀；不在项目内一律 False）
+    3) 命中 scanner.exclude_dirs / exclude_globs → False
+    4) 不在 scanner.source_root 下 → False
+    5) 后缀不在 scanner.include_extensions 内 → False
+    """
+    try:
+        manager = _build_mode_manager(project_dir)
+        if not manager.should_validate():
+            return False
+    except Exception:
+        # mode-config 读取异常时不影响放行判断，按"参与校验"处理
+        pass
+
+    rules = _load_rules_safe(project_dir)
+    scanner_cfg = (rules.get("scanner") or {}) if isinstance(rules, dict) else {}
+    source_root = (scanner_cfg.get("source_root") or "src").rstrip("/")
+    include_exts = tuple(scanner_cfg.get("include_extensions")
+                          or [".ts", ".tsx", ".d.ts"])
+    exclude_globs = list(scanner_cfg.get("exclude_globs") or [])
+    exclude_dirs = set(scanner_cfg.get("exclude_dirs") or [])
+
+    # 1) 绝对路径剥前缀；不在项目内 → False
+    p = Path(file_path)
+    if p.is_absolute():
+        try:
+            rel = p.resolve().relative_to(project_dir).as_posix()
+        except ValueError:
+            return False
+    else:
+        rel = file_path.replace("\\", "/")
+
+    # 2) source_root 前缀
+    src_prefix = source_root + "/"
+    if not (rel == source_root or rel.startswith(src_prefix)):
+        return False
+
+    # 3) exclude_dirs（任一路径分量命中即排除）
+    parts = rel.split("/")
+    if any(part in exclude_dirs for part in parts):
+        return False
+
+    # 4) exclude_globs
+    import fnmatch
+    if any(fnmatch.fnmatch(rel, pat) for pat in exclude_globs):
+        return False
+
+    # 5) 扩展名（支持组合扩展名 .d.ts）
+    name = rel.rsplit("/", 1)[-1].lower()
+    if not any(name.endswith(ext.lower()) for ext in include_exts):
+        return False
+
+    return True
+
+
+def _load_rules_safe(project_dir: Path) -> dict:
+    rules_file = project_dir / ".harness" / "rules.yaml"
+    if not rules_file.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
 
 
 def _issue_to_dict(issue) -> dict:
@@ -963,6 +1053,197 @@ def uninstall_cmd(agent: str, dry_run: bool, as_json: bool) -> None:
         click.echo("\nℹ️  dry-run；未写盘。去掉 --dry-run 真正落盘。")
     else:
         click.echo("\n✅ 卸载完成（其它 Agent 自带的 hook 已原样保留）。")
+
+
+# -- init ------------------------------------------------------------------
+
+
+_DEFAULT_RULES_PATH = _HARNESS_DIR / "rules.yaml"
+
+
+def _load_default_rules_for_init() -> dict:
+    """读 .harness/rules.yaml 作为 init 的基线默认。
+
+    与 _load_rules_safe 不同：这里读的是 harness 安装目录里出厂的那份，
+    不是用户项目里被改过的那份。init 是要"为新项目"生成一份 rules。
+    """
+    if not _DEFAULT_RULES_PATH.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(_DEFAULT_RULES_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def _render_plan_human(plan, project_dir: Path) -> str:
+    """渲染 ProposedPlan 给人看（init --dry-run / 交互前预览）。"""
+    lines: List[str] = []
+    lines.append(f"📂 项目: {project_dir}")
+    lines.append("")
+    if plan.adopted_notes:
+        lines.append("✅ 自动采纳：")
+        for n in plan.adopted_notes:
+            lines.append(f"   • {n}")
+        lines.append("")
+    if plan.info_notes:
+        lines.append("ℹ️  探测提示：")
+        for n in plan.info_notes:
+            lines.append(f"   • {n}")
+        lines.append("")
+    if plan.conflicts:
+        lines.append(f"❓ 需要决策（{len(plan.conflicts)} 项）：")
+        for c in plan.conflicts:
+            lines.append(f"   [{c.id}] {c.title}")
+            for ch in c.choices:
+                mark = " (默认)" if ch.key == c.default_choice else ""
+                lines.append(f"      - {ch.key}: {ch.label}{mark}")
+        lines.append("")
+    else:
+        lines.append("✨ 无需决策的冲突。")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _prompt_for_choice(conflict) -> str:
+    """交互式让用户从 conflict.choices 里挑一个，返回 choice.key。"""
+    click.echo()
+    click.echo(f"❓ {conflict.title}")
+    if conflict.detail:
+        for ln in conflict.detail.splitlines():
+            click.echo(f"   {ln}")
+    keys: List[str] = []
+    for idx, ch in enumerate(conflict.choices, 1):
+        mark = " ★" if ch.key == conflict.default_choice else ""
+        click.echo(f"   [{idx}] {ch.label}{mark}")
+        if ch.detail:
+            click.echo(f"        {ch.detail}")
+        keys.append(ch.key)
+    default_idx = "1"
+    if conflict.default_choice and conflict.default_choice in keys:
+        default_idx = str(keys.index(conflict.default_choice) + 1)
+    while True:
+        raw = click.prompt(
+            "   选择编号", default=default_idx, show_default=True, type=str,
+        ).strip()
+        try:
+            n = int(raw)
+            if 1 <= n <= len(keys):
+                return keys[n - 1]
+        except ValueError:
+            pass
+        click.echo(f"   ⚠️ 请输入 1-{len(keys)} 之间的数字")
+
+
+def _write_init_outputs(
+    project_dir: Path, final_rules: dict, plan,
+) -> List[Path]:
+    """落盘 rules.yaml + 初始化必要的目录。返回写了/动了的文件列表。"""
+    import yaml
+    written: List[Path] = []
+    harness_dir = project_dir / ".harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    rules_path = harness_dir / "rules.yaml"
+    rules_path.write_text(
+        yaml.safe_dump(final_rules, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    written.append(rules_path)
+    # 必要的空目录
+    for sub in ("context", "generated", "memory/lessons"):
+        d = harness_dir / sub
+        d.mkdir(parents=True, exist_ok=True)
+        keep = d / ".gitkeep"
+        if not keep.exists():
+            keep.write_text("", encoding="utf-8")
+    # mode-config.json
+    mode_file = harness_dir / "mode-config.json"
+    if not mode_file.exists():
+        mode_file.write_text(
+            json.dumps({"mode": "strict"}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        written.append(mode_file)
+    return written
+
+
+@cli.command("init")
+@click.option("--dry-run", is_flag=True,
+              help="只跑探测 + 协商，打印 plan，不写盘")
+@click.option("--yes", "-y", "auto_yes", is_flag=True,
+              help="所有 conflict 走 default_choice，不交互")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出 plan")
+def init_cmd(dry_run: bool, auto_yes: bool, as_json: bool) -> None:
+    """探测项目现状并生成 .harness/rules.yaml。
+
+    三段式:
+      1) probe   — 只读扫一遍项目根（tsconfig / package.json / src/）
+      2) resolve — 对照出厂默认 rules，自动采纳能采纳的、抛 conflict
+      3) apply   — 交互回答（或 --yes 走默认）后写盘
+    """
+    project_dir = _resolve_project_dir()
+    report = probe_project(project_dir)
+    default_rules = _load_default_rules_for_init()
+    resolver = InitResolver(default_rules, report)
+    plan = resolver.resolve()
+
+    if as_json:
+        click.echo(json.dumps({
+            "project_dir": str(project_dir),
+            "adopted_notes": plan.adopted_notes,
+            "info_notes": plan.info_notes,
+            "conflicts": [
+                {
+                    "id": c.id,
+                    "category": c.category,
+                    "title": c.title,
+                    "detail": c.detail,
+                    "default_choice": c.default_choice,
+                    "choices": [
+                        {"key": ch.key, "label": ch.label, "detail": ch.detail}
+                        for ch in c.choices
+                    ],
+                }
+                for c in plan.conflicts
+            ],
+            "dry_run": dry_run,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    click.echo(_render_plan_human(plan, project_dir))
+
+    if dry_run:
+        click.echo("ℹ️  dry-run；未写盘。去掉 --dry-run 真正落盘。")
+        return
+
+    # 交互或 --yes
+    answers: dict = {}
+    if plan.conflicts and not auto_yes:
+        click.echo("请逐条选择：")
+        for c in plan.conflicts:
+            answers[c.id] = _prompt_for_choice(c)
+
+    final_rules = resolver.apply_user_choices(plan, answers)
+    rules_path = project_dir / ".harness" / "rules.yaml"
+    if rules_path.exists():
+        if not click.confirm(
+            f"⚠️ {rules_path.relative_to(project_dir)} 已存在，覆盖？",
+            default=False,
+        ):
+            click.echo("已取消，未写盘。")
+            return
+
+    written = _write_init_outputs(project_dir, final_rules, plan)
+    click.echo("\n✅ init 完成。落盘:")
+    for p in written:
+        try:
+            rel = p.relative_to(project_dir)
+        except ValueError:
+            rel = p
+        click.echo(f"   • {rel}")
+    click.echo("\n下一步：")
+    click.echo("   1) `harness install --agent <claude|ducc|baidu-cc>` 接通 hook")
+    click.echo("   2) `harness scan` 生成 .harness/generated/claude.md")
 
 
 if __name__ == "__main__":

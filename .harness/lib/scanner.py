@@ -104,7 +104,58 @@ class IncrementalScanner:
         self.exclude_globs = list(self.scanner_cfg.get("exclude_globs", []))
         self.exclude_dirs = set(self.scanner_cfg.get("exclude_dirs", []))
 
+        # 路径别名（默认 "@/" 映射到 source_root/）。支持配多个：
+        #   scanner:
+        #     import_alias: "@/"            # 简写
+        #     # 或
+        #     import_aliases:               # 多别名
+        #       "@/": "src/"
+        #       "~/": "src/"
+        # 顺序：先消费 import_aliases，再消费 import_alias。
+        self.import_aliases: List[Tuple[str, str]] = self._build_aliases()
+
+        # 模块解析候选扩展名（与 include_exts 区分：解析时通常需要在裸路径
+        # 上拼一个具体扩展名，所以不应包含组合扩展名 .d.ts；这里允许通过
+        # rules.yaml scanner.module_resolution_extensions 覆盖）。
+        custom_resolve = self.scanner_cfg.get("module_resolution_extensions")
+        if custom_resolve:
+            self._resolve_suffixes = tuple(custom_resolve)
+        else:
+            self._resolve_suffixes = tuple(
+                ext for ext in self.include_exts if "." not in ext.lstrip(".")
+            ) or (".ts", ".tsx")
+            # 始终保留 .d.ts 末位探测（脚本类型声明），与 TS resolver 行为对齐
+            if ".d.ts" in self.include_exts and ".d.ts" not in self._resolve_suffixes:
+                self._resolve_suffixes = self._resolve_suffixes + (".d.ts",)
+
+        self._index_suffixes = tuple(
+            f"index{ext}" for ext in self._resolve_suffixes
+        )
+
         self.parser = TypeScriptParser()
+
+    def _build_aliases(self) -> List[Tuple[str, str]]:
+        """收集导入路径别名。返回 [(alias_prefix, target_prefix)]。
+
+        - target_prefix 末尾不带 "/"
+        - alias_prefix 默认补 "/"，确保不会把 "@something" 误判为别名
+        """
+        aliases: List[Tuple[str, str]] = []
+        multi = self.scanner_cfg.get("import_aliases") or {}
+        if isinstance(multi, dict):
+            for k, v in multi.items():
+                if not isinstance(k, str) or not isinstance(v, str) or not k:
+                    continue
+                aliases.append((k if k.endswith("/") else k + "/", v.rstrip("/")))
+        single = self.scanner_cfg.get("import_alias")
+        if isinstance(single, str) and single:
+            prefix = single if single.endswith("/") else single + "/"
+            target = (self.scanner_cfg.get("import_alias_target")
+                      or self.source_root or "src").rstrip("/")
+            aliases.append((prefix, target))
+        if not aliases:
+            aliases.append(("@/", (self.source_root or "src").rstrip("/")))
+        return aliases
 
     # -- 公共入口 -----------------------------------------------------------
 
@@ -345,17 +396,19 @@ class IncrementalScanner:
         """把 import source 解析成项目内文件路径。
 
         返回 (resolved_rel_posix or None, is_external)。
-        - 外部包（不以 @/ 或 ./ 或 ../ 开头）→ (None, True)
-        - @/foo → src/foo.{ts,tsx,d.ts} 或 src/foo/index.{ts,tsx,d.ts}
+        - 外部包（不命中任何 alias 也不是相对路径）→ (None, True)
+        - alias 命中（默认 "@/" → source_root）：替换前缀后按候选扩展名探测
         - ./foo / ../foo → 相对 from_file 解析
         """
         if not source:
             return None, True
 
-        if source.startswith("@/"):
-            rel_under_src = source[2:]
-            base = self.project_dir / self.source_root / rel_under_src
-            return self._probe_module_candidates(base), False
+        # alias 命中？支持配置多个（"@/" / "~/" 之类）
+        for prefix, target in self.import_aliases:
+            if source.startswith(prefix):
+                rel_under_target = source[len(prefix):]
+                base = self.project_dir / target / rel_under_target
+                return self._probe_module_candidates(base), False
 
         if source.startswith("./") or source.startswith("../"):
             base = (from_file_abs.parent / source).resolve()
@@ -364,21 +417,17 @@ class IncrementalScanner:
         # 裸名 / 三方包
         return None, True
 
-    # 与 TS resolver 对齐的探测顺序
-    _CANDIDATE_SUFFIXES = (".ts", ".tsx", ".d.ts")
-    _INDEX_SUFFIXES = ("index.ts", "index.tsx", "index.d.ts")
-
     def _probe_module_candidates(self, base: Path) -> Optional[str]:
-        """按 .ts → .tsx → .d.ts → /index.ts → /index.tsx → /index.d.ts 顺序探测。"""
+        """按 rules.scanner 候选扩展名 → /index.<ext> 顺序探测。"""
         # 1) base + ext —— 用字符串拼接避免 with_suffix 在 .d 已存在时丢后缀
-        for ext in self._CANDIDATE_SUFFIXES:
+        for ext in self._resolve_suffixes:
             candidate = Path(str(base) + ext)
             if candidate.is_file():
                 return self._to_project_rel(candidate)
 
         # 2) base/index.*
         if base.is_dir():
-            for idx in self._INDEX_SUFFIXES:
+            for idx in self._index_suffixes:
                 candidate = base / idx
                 if candidate.is_file():
                     return self._to_project_rel(candidate)

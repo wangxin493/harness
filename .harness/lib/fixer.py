@@ -73,14 +73,16 @@ class FixResult:
 
 
 class Fixer:
-    """P1 最小修复器：只处理 import-forbidden 中可机械替换的子集。"""
+    """P1 最小修复器：只处理 import-forbidden 中可机械替换的子集。
 
-    # 可机械替换的 forbidden 映射（前缀替换）。
-    # key 末尾不带 "/"；命中条件：source == key 或 source.startswith(key + "/")
-    _FORBIDDEN_REWRITES: Dict[str, str] = {
-        "@/services": "@/api",
-        # @/api/mockApi 故意不在此处：替换目标依赖具体业务，机器决定不了
-    }
+    可机械替换的 forbidden 映射从 `rules.yaml imports.rewrites` 读取：
+        imports:
+          rewrites:
+            "@/legacy": "@/api"
+
+    key 末尾不带 "/"；命中条件：source == key 或 source.startswith(key + "/")
+    rules 缺省 / 不存在时映射为空，fixer 只会出 instruction，不会出 patch。
+    """
 
     def __init__(
         self,
@@ -89,6 +91,7 @@ class Fixer:
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.validator = validator or CodeValidator(project_dir=self.project_dir)
+        self._rewrites: Dict[str, str] = self._load_rewrites()
 
     # -- 公共 API -----------------------------------------------------------
 
@@ -192,17 +195,19 @@ class Fixer:
 
         return "".join(lines), applied_rules, applied_lines
 
-    @classmethod
-    def _rewrite_import_line(cls, line: str) -> Optional[str]:
+    def _rewrite_import_line(self, line: str) -> Optional[str]:
         """对单行做前缀替换。命中第一个适用的 rewrite 规则就返回。"""
+        if not self._rewrites:
+            return None
         # 匹配 import/export 行里的字符串字面量（单引号或双引号）
         # 这里不试图解析 AST：fix 只动我们自己生成的字面量片段，不动语法结构。
         pattern = re.compile(r"""(['"])([^'"]+)\1""")
+        rewrites = self._rewrites
 
         def _replace(match: "re.Match[str]") -> str:
             quote = match.group(1)
             src = match.group(2)
-            for prefix, replacement in cls._FORBIDDEN_REWRITES.items():
+            for prefix, replacement in rewrites.items():
                 if src == prefix:
                     return f"{quote}{replacement}{quote}"
                 if src.startswith(prefix + "/"):
@@ -212,6 +217,29 @@ class Fixer:
 
         new_line = pattern.sub(_replace, line)
         return new_line if new_line != line else None
+
+    # -- rules.yaml 装载 -----------------------------------------------------
+
+    def _load_rewrites(self) -> Dict[str, str]:
+        """从 .harness/rules.yaml 读 imports.rewrites；缺失/解析失败 → 空映射。"""
+        rules_file = self.project_dir / ".harness" / "rules.yaml"
+        if not rules_file.exists():
+            return {}
+        try:
+            import yaml  # 延迟导入；测试 fixture 也走这条
+            data = yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return {}
+        imports = data.get("imports") or {}
+        rewrites = imports.get("rewrites") or {}
+        if not isinstance(rewrites, dict):
+            return {}
+        # 只保留 str → str 的项，过滤异常配置
+        clean: Dict[str, str] = {}
+        for k, v in rewrites.items():
+            if isinstance(k, str) and isinstance(v, str) and k:
+                clean[k.rstrip("/")] = v
+        return clean
 
     # -- patch 覆盖判定 ------------------------------------------------------
 

@@ -63,20 +63,15 @@ case "$FILE_PATH" in
     *)                REL_PATH="$FILE_PATH" ;;
 esac
 
-# 仅 src/ 下的 .ts / .tsx / .d.ts —— 用前缀 + 后缀两次 case 匹配，
-# 避免依赖 `src/**/*.ts` 这种 globstar 写法（bash case 模式默认不递归，
-# macOS 系统 bash 3.2 也没有 globstar，会让 src/components/Foo.ts 被静默放行）。
-case "$REL_PATH" in
-    src/*) ;;
-    *) exit 0 ;;
-esac
-case "$REL_PATH" in
-    *.ts|*.tsx|*.d.ts) ;;
-    *) exit 0 ;;
-esac
+# 是否在 harness 关心的范围内由 CLI 判断（读 rules.yaml scanner.source_root
+# / include_extensions / exclude_*），shell 不再写死 src/*.ts/*.tsx/*.d.ts。
+# exit 0：跳过；exit 1：参与校验。任何异常一律放行（exit 0），保持兼容。
+export HARNESS_PROJECT_DIR="$PROJECT_DIR"
+if ! "$HARNESS_BIN" should-validate "$REL_PATH" >/dev/null 2>&1; then
+    exit 0
+fi
 
 # --- 调 CLI 验证 ----------------------------------------------------------
-export HARNESS_PROJECT_DIR="$PROJECT_DIR"
 RESULT=$("$HARNESS_BIN" validate --json "$REL_PATH" 2>&1)
 EXIT_CODE=$?
 

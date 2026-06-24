@@ -413,9 +413,10 @@ DEFAULT_HANDWRITTEN_BODY = """## 背景与原则（手写区）
 > 本节由人维护，`harness generate` 不会覆盖。写写为什么这么定规矩、关键决
 > 策的取舍、新人 onboarding 时容易踩的坑。
 
-- _示例_：为什么禁止 `@/services` —— 历史代码把 mock 与真实接口混在一起，
-  迁移到 `@/api` 后强制走 service 层封装。直接 import `@/services` 会让
-  mock 漏到生产环境。
+- _示例_：在 `rules.yaml` 的 `imports.forbidden_imports` 列出团队历史踩坑
+  的路径前缀（例如已废弃的 `@/legacy` / 直接耦合 mock 的 `@/api/mockApi`
+  之类），并在 `imports.rewrites` 给出可机械替换的目标，让 `harness fix`
+  能在本地把它们一键纠正回来。
 
 ## FAQ
 
