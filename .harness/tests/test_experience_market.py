@@ -235,6 +235,25 @@ class TestRelevance(unittest.TestCase):
         )
         self.assertEqual([x["id"] for x in out], ["ok"])
 
+    def test_min_score_threshold_loaded_from_rules(self):
+        """A1: rules.yaml experience_market.min_score 接通 → get_relevant_lessons 默认走它。"""
+        # 写一份 rules.yaml,把 min_score 拉到 99(几乎过滤全部)
+        rules = self.fx.harness_dir / "rules.yaml"
+        rules.write_text(
+            "experience_market:\n  min_score: 99\n", encoding="utf-8")
+        m = self.fx.market()
+        m.add_lesson(
+            title="t", content="x", lesson_id="L",
+            keywords=["match"],
+        )
+        # 不传 min_score → 走 rules.yaml 的 99,过滤掉
+        out = m.get_relevant_lessons({"task_description": "match"}, limit=5)
+        self.assertEqual(out, [])
+        # 传 min_score 显式 0.1 仍然能命中
+        out2 = m.get_relevant_lessons(
+            {"task_description": "match"}, limit=5, min_score=0.1)
+        self.assertEqual([x["id"] for x in out2], ["L"])
+
 
 # ---------------------------------------------------------------------------
 # sync (latest-wins)

@@ -45,6 +45,8 @@ class GenerateContext:
     # 需要重跑 generate 就能比对是否过期。其它 adapter 不消费这两个字段。
     mode: str = "strict"                  # 当前治理模式（来自 mode-config.json）
     source_hashes: Dict[str, str] = field(default_factory=dict)  # 文件名 → sha8
+    # A1 接通点:experience_market.max_lessons 控制 brief 注入条数上限
+    max_lessons: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,51 @@ def _render_naming(rules: Dict[str, Any]) -> str:
     if not naming:
         return "（rules.yaml 未配置 naming）"
     return "\n".join(f"- **{k}**: {v}" for k, v in naming.items())
+
+
+def _render_project_constraints(rules: Dict[str, Any]) -> str:
+    """B8: 渲染 `project_constraints` —— 项目级硬约束(必读)。
+
+    rules.yaml schema::
+
+        project_constraints:
+          - title: "不允许 default export"
+            why: "Tree-shake 友好;rename refactor 安全。"
+            example: "export const Foo = ...; ❌ export default Foo;"
+          - "纯字符串也行,直接当一条约束"
+
+    返回值为空字符串 → adapter 不渲染整个章节。
+    """
+    items = (rules or {}).get("project_constraints") or []
+    if not isinstance(items, list) or not items:
+        return ""
+    lines = []
+    for i, item in enumerate(items, 1):
+        if isinstance(item, str):
+            lines.append(f"{i}. {item}")
+        elif isinstance(item, dict):
+            title = item.get("title") or "(未命名约束)"
+            lines.append(f"{i}. **{title}**")
+            why = item.get("why")
+            if why:
+                lines.append(f"   - 为什么: {why}")
+            example = item.get("example")
+            if example:
+                lines.append(f"   - 示例: `{example}`")
+    return "\n".join(lines)
+
+
+def _render_constraints_section(rules: Dict[str, Any]) -> str:
+    """渲染 ## 🚨 项目硬约束 章节;无约束时返回空字符串(整段不出现)。"""
+    body = _render_project_constraints(rules)
+    if not body:
+        return ""
+    return (
+        "## 🚨 项目硬约束（必读）\n\n"
+        "> 业务级硬约束,优先于下方架构/导入/命名规范。违反这些约束的代码"
+        "应直接拒绝;不写在 lessons 里因为 lesson 是经验、约束是底线。\n\n"
+        f"{body}\n\n"
+    )
 
 
 def _render_stats(project_context: Dict[str, Any]) -> str:
@@ -281,6 +328,62 @@ harness new <kind> <name> [--path <dir>] [--force]
 
 
 # ---------------------------------------------------------------------------
+# B4: 三个 Agent adapter 共享的 body 拼装
+# ---------------------------------------------------------------------------
+
+
+def _render_shared_body(
+    ctx: GenerateContext,
+    *,
+    architecture_style: str = "table",
+    sections: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """三个 Agent adapter 共用的正文渲染。
+
+    architecture_style: 'table' (Claude/Comate) | 'bullets' (Ducc)
+    sections: 「项目状态」之后的若干自定义 section,每条 dict 形如
+              ``{"title": "## 📁 已有组件", "key": "components", "label": "组件",
+                "limit": 15}`` —— Claude/Ducc 列组件+hooks,Comate 列 types+apis。
+
+    其它共享部分(标题段、强制规则、命名、新建文件帮助、经验索引)在这里统一渲染。
+    """
+    arch_block = (
+        _render_architecture_bullets(ctx.rules)
+        if architecture_style == "bullets"
+        else _render_architecture_table(ctx.rules)
+    )
+
+    constraints = _render_constraints_section(ctx.rules)
+
+    parts: List[str] = [
+        constraints + "## ⛔ 强制规则",
+        "### 三层架构",
+        arch_block,
+        "### 导入规则",
+        _render_imports(ctx.rules),
+        "### 命名规范",
+        _render_naming(ctx.rules),
+        "## 📊 项目当前状态",
+        _render_stats(ctx.project_context),
+    ]
+
+    for sec in sections or []:
+        parts.append(sec["title"])
+        parts.append(_render_top_items(
+            ctx.project_context.get(sec["key"]) or [],
+            sec.get("label", sec["key"]),
+            limit=sec.get("limit", 15),
+        ))
+
+    parts.append("## 🔥 团队经验教训（索引）")
+    parts.append(_render_lessons_brief(ctx.lessons, limit=ctx.max_lessons))
+    parts.append("## 🆕 新建文件（harness new）")
+    parts.append(_render_new_command_help(ctx.rules))
+
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # 三个具体 adapter
 # ---------------------------------------------------------------------------
 
@@ -301,56 +404,33 @@ class ClaudeAdapter(AgentAdapter):
         return "Claude Code"
 
     def render_body(self, ctx: GenerateContext) -> str:
-        return f"""# 项目规范（Claude Code）
-
-> 由 harness 自动生成。在 `CLAUDE.md` 中通过 `@.harness/generated/claude.md` 引入即可。
-
-## ⛔ 强制规则
-
-### 三层架构
-
-{_render_architecture_table(ctx.rules)}
-
-### 导入规则
-
-{_render_imports(ctx.rules)}
-
-### 命名规范
-
-{_render_naming(ctx.rules)}
-
-## 📊 项目当前状态
-
-{_render_stats(ctx.project_context)}
-
-## 📁 已有组件（节选）
-
-{_render_top_items(ctx.project_context.get("components") or [], "组件")}
-
-## 🪝 已有 Hooks（节选）
-
-{_render_top_items(ctx.project_context.get("hooks") or [], "Hook")}
-
-## 🌐 已有 API（节选）
-
-{_render_top_items(ctx.project_context.get("apis") or [], "API")}
-
-## 🔥 团队经验教训（索引）
-
-{_render_lessons_brief(ctx.lessons)}
-
-## 🛠️ 工作流
-
-- 修改代码后 PostToolUse hook 会自动跑 `harness validate`
-- 同一 PostToolUse 还会按当前 file_path + 内容动态注入相关经验（inject-lessons.sh）
-- 验证失败会以 `decision: block` 返回；按 reason 修改后再保存
-- 治理模式可通过 `harness mode <strict|relaxed|off>` 切换
-- 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）
-
-## 🆕 新建文件（harness new）
-
-{_render_new_command_help(ctx.rules)}
-"""
+        header = (
+            "# 项目规范（Claude Code）\n\n"
+            "> 由 harness 自动生成。在 `CLAUDE.md` 中通过 "
+            "`@.harness/generated/claude.md` 引入即可。\n\n"
+        )
+        body = _render_shared_body(
+            ctx,
+            architecture_style="table",
+            sections=[
+                {"title": "## 📁 已有组件（节选）", "key": "components", "label": "组件"},
+                {"title": "## 🪝 已有 Hooks（节选）", "key": "hooks", "label": "Hook"},
+                {"title": "## 🌐 已有 API（节选）", "key": "apis", "label": "API"},
+            ],
+        )
+        # Claude 风格特化:在「经验索引」之前插入工作流说明
+        # 简单做法:直接在 body 末尾追加;_render_shared_body 已含 经验+新建文件,
+        # 这里再补 Claude 独有的工作流段(放在最后,跟当前结构一致)
+        workflow = (
+            "\n\n## 🛠️ 工作流\n\n"
+            "- 修改代码后 PostToolUse hook 会自动跑 `harness validate`\n"
+            "- 同一 PostToolUse 还会按当前 file_path + 内容动态注入相关经验"
+            "（inject-lessons.sh）\n"
+            "- 验证失败会以 `decision: block` 返回；按 reason 修改后再保存\n"
+            "- 治理模式可通过 `harness mode <strict|relaxed|off>` 切换\n"
+            "- 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）"
+        )
+        return header + body + workflow + "\n"
 
 
 class ComateAdapter(AgentAdapter):
@@ -365,44 +445,21 @@ class ComateAdapter(AgentAdapter):
         return "Comate"
 
     def render_body(self, ctx: GenerateContext) -> str:
-        return f"""# 项目规范（Comate）
-
-> 本项目使用 .harness 框架约束代码规范。本文件由 harness 自动生成。
-
-## ⛔ 强制规则
-
-### 三层架构
-
-{_render_architecture_table(ctx.rules)}
-
-### 导入规则
-
-{_render_imports(ctx.rules)}
-
-### 命名规范
-
-{_render_naming(ctx.rules)}
-
-## 📊 项目当前状态
-
-{_render_stats(ctx.project_context)}
-
-## 📁 可用类型
-
-{_render_top_items(ctx.project_context.get("types") or [], "类型", limit=20)}
-
-## 🌐 可用 API
-
-{_render_top_items(ctx.project_context.get("apis") or [], "API", limit=20)}
-
-## 🔥 团队经验教训（索引）
-
-{_render_lessons_brief(ctx.lessons)}
-
-## 🆕 新建文件（harness new）
-
-{_render_new_command_help(ctx.rules)}
-"""
+        header = (
+            "# 项目规范（Comate）\n\n"
+            "> 本项目使用 .harness 框架约束代码规范。本文件由 harness 自动生成。\n\n"
+        )
+        body = _render_shared_body(
+            ctx,
+            architecture_style="table",
+            sections=[
+                {"title": "## 📁 可用类型", "key": "types",
+                 "label": "类型", "limit": 20},
+                {"title": "## 🌐 可用 API", "key": "apis",
+                 "label": "API", "limit": 20},
+            ],
+        )
+        return header + body + "\n"
 
 
 class DuccAdapter(AgentAdapter):
@@ -417,44 +474,19 @@ class DuccAdapter(AgentAdapter):
         return "Ducc"
 
     def render_body(self, ctx: GenerateContext) -> str:
-        return f"""# 项目规范（Ducc）
-
-> 本项目使用 .harness 框架约束代码规范。本文件由 harness 自动生成。
-
-## ⛔ 强制规则
-
-### 三层架构
-
-{_render_architecture_bullets(ctx.rules)}
-
-### 导入规则
-
-{_render_imports(ctx.rules)}
-
-### 命名规范
-
-{_render_naming(ctx.rules)}
-
-## 📊 项目当前状态
-
-{_render_stats(ctx.project_context)}
-
-## 🧩 已有组件（节选）
-
-{_render_top_items(ctx.project_context.get("components") or [], "组件")}
-
-## 🪝 已有 Hooks（节选）
-
-{_render_top_items(ctx.project_context.get("hooks") or [], "Hook")}
-
-## 🔥 团队经验教训（索引）
-
-{_render_lessons_brief(ctx.lessons)}
-
-## 🆕 新建文件（harness new）
-
-{_render_new_command_help(ctx.rules)}
-"""
+        header = (
+            "# 项目规范（Ducc）\n\n"
+            "> 本项目使用 .harness 框架约束代码规范。本文件由 harness 自动生成。\n\n"
+        )
+        body = _render_shared_body(
+            ctx,
+            architecture_style="bullets",
+            sections=[
+                {"title": "## 🧩 已有组件（节选）", "key": "components", "label": "组件"},
+                {"title": "## 🪝 已有 Hooks（节选）", "key": "hooks", "label": "Hook"},
+            ],
+        )
+        return header + body + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +686,7 @@ class ReadmeAdapter(AgentAdapter):
         return f"{README_AUTO_BEGIN}\n\n{body}\n\n{README_AUTO_END}"
 
     def _render_auto_body(self, ctx: GenerateContext) -> str:
-        return f"""## ⛔ 当前强制规则
+        return f"""{_render_constraints_section(ctx.rules)}## ⛔ 当前强制规则
 
 ### 三层架构
 
@@ -784,10 +816,86 @@ class GenerateResult:
     written: List[str] = field(default_factory=list)   # 写入文件的相对路径
 
 
+# ---------------------------------------------------------------------------
+# HooksConfigAdapter —— 把 rules.yaml scanner.* + mode-config.json 编译成
+# bash 变量,让 validate-code.sh / inject-lessons.sh 在调 Python CLI 之前先
+# 做扩展名/目录前缀过滤(fast-path),省掉 Python 冷启动开销。
+#
+# 设计:
+# - 写到 `.harness/hooks/.config.sh`,入 git(类似 generated/*.md)
+# - 文件头部带 marker,人改不会被 generate 尊重
+# - hook 只 source 不解析 yaml,失败兜底 → 继续走原路径(向后兼容)
+# ---------------------------------------------------------------------------
+
+
+def _bash_array(items: List[str]) -> str:
+    """把 Python 列表转成 bash 数组字面量,内容做最小转义。"""
+    quoted = []
+    for it in items:
+        # 单引号包,内部单引号转成 '\''
+        s = str(it).replace("'", "'\\''")
+        quoted.append(f"'{s}'")
+    return "( " + " ".join(quoted) + " )" if quoted else "()"
+
+
+class HooksConfigAdapter(AgentAdapter):
+    """生成 `.harness/hooks/.config.sh` —— hook fast-path 用的 bash 变量。
+
+    与三个 markdown adapter 不同:
+    - 不进 generated/,直接落 hooks/.config.sh
+    - 输出是 bash 而非 markdown
+    - 不参与 README source_hashes(它本身就是 rules.yaml 的派生)
+    """
+
+    @property
+    def name(self) -> str:
+        return "hooks-config"
+
+    @property
+    def display_name(self) -> str:
+        return "Hooks fast-path config"
+
+    def target_path(self, harness_dir: Path) -> Path:
+        return harness_dir / "hooks" / ".config.sh"
+
+    def render_body(self, ctx: GenerateContext) -> str:
+        scanner = (ctx.rules or {}).get("scanner") or {}
+        source_root = scanner.get("source_root") or "src"
+        include_ext = scanner.get("include_extensions") or [".ts", ".tsx", ".d.ts"]
+        exclude_dirs = scanner.get("exclude_dirs") or []
+        exclude_globs = scanner.get("exclude_globs") or []
+
+        market = (ctx.rules or {}).get("experience_market") or {}
+        market_enabled = 1 if market.get("enabled", True) else 0
+
+        return (
+            f"# Auto-generated by harness {ctx.version} at {ctx.timestamp}\n"
+            f"# DO NOT EDIT — run `harness generate` to refresh.\n"
+            f"# Sourced by .harness/hooks/*.sh for fast-path filtering before\n"
+            f"# invoking the Python CLI. Stale values fall back to the CLI path.\n"
+            f"\n"
+            f"HARNESS_SOURCE_ROOT={_bash_quote(source_root)}\n"
+            f"HARNESS_INCLUDE_EXT={_bash_array(list(include_ext))}\n"
+            f"HARNESS_EXCLUDE_DIRS={_bash_array(list(exclude_dirs))}\n"
+            f"HARNESS_EXCLUDE_GLOBS={_bash_array(list(exclude_globs))}\n"
+            f"HARNESS_MODE={_bash_quote(ctx.mode)}\n"
+            f"HARNESS_EXPERIENCE_ENABLED={market_enabled}\n"
+        )
+
+    def render(self, ctx: GenerateContext) -> str:
+        # 覆盖基类:bash 文件不带 markdown 注释头,直接用 render_body
+        return self.render_body(ctx)
+
+
+def _bash_quote(value: str) -> str:
+    s = str(value).replace("'", "'\\''")
+    return f"'{s}'"
+
+
 class Generator:
     """统一调度 adapter 的渲染与落盘。"""
 
-    DEFAULT_ADAPTERS = (ClaudeAdapter, ComateAdapter, DuccAdapter, ReadmeAdapter)
+    DEFAULT_ADAPTERS = (ClaudeAdapter, ComateAdapter, DuccAdapter, ReadmeAdapter, HooksConfigAdapter)
 
     # 哪些文件参与 README 的 source hash —— 改这里等于改 drift check 的口径
     SOURCE_FILES = ("rules.yaml", "mode-config.json")
@@ -825,7 +933,11 @@ class Generator:
     def _build_context(self) -> GenerateContext:
         rules = self._load_rules()
         project_context = self._load_project_context()
-        lessons = self._load_lessons()
+        lessons = self._load_lessons(rules=rules)
+        market_cfg = (rules or {}).get("experience_market") or {}
+        max_lessons = market_cfg.get("max_lessons", 10)
+        if not isinstance(max_lessons, int) or max_lessons <= 0:
+            max_lessons = 10
         return GenerateContext(
             rules=rules,
             project_context=project_context,
@@ -834,6 +946,7 @@ class Generator:
             timestamp=_dt.datetime.now().isoformat(timespec="seconds"),
             mode=self._load_mode(),
             source_hashes=self._compute_source_hashes(),
+            max_lessons=max_lessons,
         )
 
     def _load_rules(self) -> Dict[str, Any]:
@@ -883,8 +996,14 @@ class Generator:
         out["lessons"] = _sha8_of_dir(lessons_dir, suffix=".md") if lessons_dir.exists() else "missing"
         return out
 
-    def _load_lessons(self) -> List[Dict[str, Any]]:
-        """从 ExperienceMarket 拉所有未过期 lesson，按 created_at 倒序。"""
+    def _load_lessons(self, rules: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """从 ExperienceMarket 拉所有未过期 lesson，按 created_at 倒序。
+
+        rules 提供时 experience_market.enabled=false 直接返回空列表(A1 接通点)。
+        """
+        market_cfg = ((rules or {}).get("experience_market") or {})
+        if market_cfg.get("enabled", True) is False:
+            return []
         # 延迟 import：避免 adapter 单测必须依赖经验市场
         from lib.experience_market import ExperienceMarket
         from dataclasses import asdict

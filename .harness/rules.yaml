@@ -1,5 +1,16 @@
 # Harness 2.0 规则配置（默认值，可被项目级覆盖）
 
+# 项目级硬约束(B8)
+# 这些是"业务底线",优先于架构/导入/命名规范,会渲染到所有 generated/*.md 顶部。
+# 留空 → adapter 不渲染整个章节;每条可以是字符串(简单约束)或 dict(带 why/example)。
+# 示例:
+# project_constraints:
+#   - title: 不允许 default export
+#     why: tree-shake 友好;rename refactor 安全
+#     example: "export const Foo = ...; ❌ export default Foo;"
+#   - 业务字段命名遵循 snake_case(后端约定)
+project_constraints: []
+
 # 验证配置
 validation:
   # （P2）超时控制：当前 validator 单文件 AST 校验耗时极短，未消费这些值
@@ -90,17 +101,18 @@ governance:
   default_mode: strict
 
 # 经验市场配置
-# P1 仅消费 enabled（隐式：模块本身可用）；其余键为 P2 占位：
-# - auto_pull   ：scan/启动时是否自动 sync（P2 接入）
-# - auto_push   ：本地 add lesson 后是否自动推到共享盘 / 远程（P2）
-# - max_lessons ：adapter 注入到 generated/*.md 的 lesson 数上限（P2 改为读此值）
-# - min_score   ：get_relevant_lessons 的阈值（P2 改为读此值；当前默认 0.3）
+# 4 个键已全部接通(2026-06-25 P2 批次2):
+# - enabled    ：master switch。false → adapter 不渲染 lessons、hook 不注入、auto_pull/push 全跳过
+# - auto_pull  ：scan 启动时是否自动 sync 共享盘 → 本地(只 pull,不 push)
+# - auto_push  ：本地 lesson add 成功后是否自动 cp 到 .harness-shared/lessons/
+# - max_lessons：generated/*.md 中 brief 索引段最多渲染几条
+# - min_score  ：get_relevant_lessons 默认阈值;低于此值的 lesson 不召回
 experience_market:
   enabled: true
-  auto_pull: true       # (P2)
-  auto_push: false      # (P2)
-  max_lessons: 10       # (P2) 当前 adapter 写死 limit=20
-  min_score: 0.3        # (P2) 当前 ExperienceMarket.DEFAULT_MIN_SCORE 写死 0.3
+  auto_pull: true
+  auto_push: false
+  max_lessons: 10
+  min_score: 0.3
 
 # 校验扩展（单文件 + 全项目维度），都可单独开关
 checks:

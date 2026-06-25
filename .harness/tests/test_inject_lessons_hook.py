@@ -163,6 +163,27 @@ class TestInjectLessonsHook(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_experience_disabled_via_config_silent(self):
+        """A1+A2: hooks/.config.sh 设 HARNESS_EXPERIENCE_ENABLED=0 → 直接退。"""
+        hooks_dir = self.fx.root / ".harness" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / ".config.sh").write_text(
+            "HARNESS_SOURCE_ROOT='src'\n"
+            "HARNESS_INCLUDE_EXT=('.ts' '.tsx' '.d.ts')\n"
+            "HARNESS_EXCLUDE_DIRS=()\n"
+            "HARNESS_EXCLUDE_GLOBS=()\n"
+            "HARNESS_MODE='strict'\n"
+            "HARNESS_EXPERIENCE_ENABLED=0\n",
+            encoding="utf-8",
+        )
+        result = self.fx.run_hook({
+            "file_path": str(self.fx.root / "src" / "api" / "x.ts"),
+            "content": "fetch",
+        })
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "",
+                         "experience disabled 应该静默退出,不应调 CLI")
+
 
 if __name__ == "__main__":
     unittest.main()

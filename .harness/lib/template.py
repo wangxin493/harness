@@ -50,6 +50,11 @@ class KindSpec:
     # - 非空 → 优先选含该子串的路径（例 "page" 让 page kind 落到 src/pages/）
     # - 空 → 反向：避开任何含 "page" 的路径，避免 component 落到 pages/
     layer_path_hint: str = ""
+    # B5: 多子串优先匹配,按列表顺序找首个命中的 layer.paths。
+    # 命中任意一条 → 立即返回该路径。
+    # 列表为空 → 回退到 layer_path_hint(向后兼容)。
+    # 例 page kind: ["page", "screen", "view"] 会让 src/views/ / src/screens/ 都能命中。
+    prefer_path_contains: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -224,7 +229,9 @@ _DEFAULT_KIND_SPECS: Dict[str, KindSpec] = {
         validate=_validate_pascal, suggest=_suggest_pascal,
         template_file="templates/page.tsx.tmpl",
         fallback_render=_tpl_page,
-        layer_path_hint="page",      # 优先选含 "page" 的路径
+        layer_path_hint="page",      # 兼容旧 hint
+        # B5: 默认子串列表,识别常见的页面目录命名(pages/screens/views)
+        prefer_path_contains=["page", "screen", "view"],
     ),
     "hook": KindSpec(
         kind="hook", layer="hook",
@@ -288,8 +295,24 @@ def _build_kind_specs(rules: Dict) -> Dict[str, KindSpec]:
                 if cfg.get("layer_path_hint") is not None
                 else default.layer_path_hint
             ),
+            prefer_path_contains=_as_str_list(
+                cfg.get("prefer_path_contains")
+                if cfg.get("prefer_path_contains") is not None
+                else default.prefer_path_contains
+            ),
         )
     return specs
+
+
+def _as_str_list(value) -> List[str]:
+    """把 yaml 读出来的可能是 None/str/list 的值规范成 List[str]。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(v) for v in value if v]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +424,10 @@ class TemplateGenerator:
 
         优先级:
         1) override(用户给的)
-        2) rules.yaml architecture.layers 里 spec.layer 的路径，按
-           layer_path_hint 挑（hint 非空 → 选包含 hint 的；空 → 排除任何
-           包含 "page" 的路径，避免 component 落到 pages/）
+        2) rules.yaml architecture.layers 里 spec.layer 的路径,挑选规则:
+           a) prefer_path_contains 非空 → 按列表顺序找首个子串命中(B5)
+           b) layer_path_hint 非空 → 选含该 hint 的路径
+           c) 都空 → 取首个不含 "page" 的路径(避免 component 落到 pages/)
         3) spec.default_dir(兜底)
         """
         if override:
@@ -414,6 +438,14 @@ class TemplateGenerator:
             if layer.get("name") != spec.layer:
                 continue
             paths = [p.replace("\\", "/") for p in (layer.get("paths") or [])]
+
+            # B5: prefer_path_contains 多子串顺序匹配
+            for needle in spec.prefer_path_contains:
+                needle_lc = needle.lower()
+                for p in paths:
+                    if needle_lc in p.lower():
+                        return p
+
             hint = (spec.layer_path_hint or "").lower()
             if hint:
                 for p in paths:

@@ -100,6 +100,16 @@ def scan_cmd(full: bool, no_generate: bool, as_json: bool,
         sys.exit(watch_loop(project_dir, debounce_sec=debounce))
 
     scanner = IncrementalScanner(project_dir=project_dir)
+
+    # A1 接通点:experience_market.auto_pull → scan 前自动 sync
+    market_cfg = _load_experience_config(project_dir)
+    if market_cfg.get("enabled", True) and market_cfg.get("auto_pull", True):
+        try:
+            _build_market(project_dir).sync(remote=False)
+        except Exception as exc:
+            if not as_json:
+                click.echo(f"⚠️  auto_pull 失败,继续 scan: {exc}", err=True)
+
     result = scanner.scan(force_full=full)
     summary = result.summary()
 
@@ -610,6 +620,31 @@ def _build_market(project_dir: Path) -> ExperienceMarket:
     return ExperienceMarket(harness_dir=project_dir / ".harness")
 
 
+def _load_experience_config(project_dir: Path) -> Dict[str, Any]:
+    """读 rules.yaml `experience_market.*` 配置;缺失走出厂默认。"""
+    defaults = {
+        "enabled": True,
+        "auto_pull": True,
+        "auto_push": False,
+        "max_lessons": 10,
+        "min_score": 0.3,
+    }
+    rules_file = project_dir / ".harness" / "rules.yaml"
+    if not rules_file.exists():
+        return defaults
+    try:
+        import yaml
+        data = yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return defaults
+    market_cfg = (data.get("experience_market") or {})
+    if not isinstance(market_cfg, dict):
+        return defaults
+    out = dict(defaults)
+    out.update({k: v for k, v in market_cfg.items() if k in defaults})
+    return out
+
+
 def _build_generator(project_dir: Path) -> Generator:
     version = (
         (_HARNESS_DIR / "VERSION").read_text(encoding="utf-8").strip()
@@ -720,9 +755,22 @@ def lesson_add(title, content, category, severity, keywords, applies_to,
     click.echo(f"✅ 已新增 lesson [{lesson.id}] → "
                f"{market.local_dir / (lesson.id + '.md')}")
 
+    # A1 接通点:experience_market.auto_push → 推到 .harness-shared/lessons/
+    project_dir = _resolve_project_dir()
+    market_cfg = _load_experience_config(project_dir)
+    if market_cfg.get("enabled", True) and market_cfg.get("auto_push", False):
+        try:
+            import shutil as _shutil
+            market.shared_dir.mkdir(parents=True, exist_ok=True)
+            src = market.local_dir / f"{lesson.id}.md"
+            dst = market.shared_dir / f"{lesson.id}.md"
+            _shutil.copy2(src, dst)
+            click.echo(f"📤 auto_push → {dst}")
+        except Exception as exc:
+            click.echo(f"⚠️  auto_push 失败(本地已写入,跳过共享盘): {exc}", err=True)
+
     # 自动刷新 generated/*.md：generator 直接读 memory/lessons/，不依赖 scan 结果，
     # 失败不阻断（和 scan_cmd 内部逻辑保持一致）。
-    project_dir = _resolve_project_dir()
     generated_files: List[str] = []
     try:
         gen_result = _build_generator(project_dir).generate_all()

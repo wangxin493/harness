@@ -8,6 +8,8 @@
 # 设计：
 # - 与 validate-code.sh 是同位面的两个 hook，互不依赖（validate 拦截 → exit 2；
 #   本 hook 永远 exit 0，仅注入上下文）
+# - fast-path（A2）：source hooks/.config.sh 后用纯 bash 做 ext/source_root/mode
+#   过滤；experience_market.enabled=0 时直接跳过
 # - 治理模式 off / harness 未装 / 命中 0 条 → 静默退出，不污染 Agent 输出
 # - 失败永不抛错（stderr 简短提示，exit 0）
 
@@ -21,7 +23,26 @@ if [ ! -d "$HARNESS_DIR" ] || [ ! -x "$HARNESS_BIN" ]; then
     exit 0
 fi
 
+# --- fast-path 配置 -------------------------------------------------------
+HARNESS_CONFIG="$HARNESS_DIR/hooks/.config.sh"
+HARNESS_SOURCE_ROOT='src'
+HARNESS_INCLUDE_EXT=('.ts' '.tsx' '.d.ts')
+HARNESS_EXCLUDE_DIRS=('node_modules' 'dist' 'build' '.git' '.harness')
+HARNESS_EXCLUDE_GLOBS=()
+HARNESS_MODE='strict'
+HARNESS_EXPERIENCE_ENABLED=1
+# shellcheck disable=SC1090
+[ -f "$HARNESS_CONFIG" ] && . "$HARNESS_CONFIG"
+
+# experience_market 关掉 → 直接退（A1 接通点）
+if [ "${HARNESS_EXPERIENCE_ENABLED:-1}" = "0" ]; then
+    exit 0
+fi
+
 # --- 治理模式：off → 跳过 -------------------------------------------------
+if [ "${HARNESS_MODE:-strict}" = "off" ]; then
+    exit 0
+fi
 MODE_CONFIG="$HARNESS_DIR/mode-config.json"
 if [ -f "$MODE_CONFIG" ]; then
     MODE=$(python3 -c "
@@ -74,14 +95,38 @@ if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
-# 只对 src/ 下 .ts/.tsx/.d.ts 注入；其他文件没经验匹配意义
+# 转项目相对路径
 case "$FILE_PATH" in
     "$PROJECT_DIR"/*) REL_PATH="${FILE_PATH#$PROJECT_DIR/}" ;;
     /*)               REL_PATH="$FILE_PATH" ;;
     *)                REL_PATH="$FILE_PATH" ;;
 esac
-# 是否在 harness 关心的范围内由 CLI 判断（读 rules.yaml scanner.*），
-# shell 不再写死 src/*.ts/*.tsx/*.d.ts。
+
+# --- fast-path：纯 bash 过滤 ----------------------------------------------
+if [ -n "${HARNESS_SOURCE_ROOT:-}" ]; then
+    case "$REL_PATH" in
+        "${HARNESS_SOURCE_ROOT}"/*) : ;;
+        *) exit 0 ;;
+    esac
+fi
+
+_ext_ok=0
+for _ext in "${HARNESS_INCLUDE_EXT[@]:-}"; do
+    [ -z "$_ext" ] && continue
+    case "$REL_PATH" in
+        *"$_ext") _ext_ok=1; break ;;
+    esac
+done
+[ $_ext_ok -eq 0 ] && exit 0
+
+for _xd in "${HARNESS_EXCLUDE_DIRS[@]:-}"; do
+    [ -z "$_xd" ] && continue
+    case "$REL_PATH" in
+        "$_xd"/*|*/"$_xd"/*) exit 0 ;;
+    esac
+done
+
+# CLI 二次确认（exclude_globs 等复杂规则交给 CLI 判断）
 export HARNESS_PROJECT_DIR="$PROJECT_DIR"
 if ! "$HARNESS_BIN" should-validate "$REL_PATH" >/dev/null 2>&1; then
     exit 0

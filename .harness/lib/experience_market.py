@@ -109,6 +109,23 @@ class ExperienceMarket:
             self.shared_dir = Path(shared_dir).resolve()
         else:
             self.shared_dir = self.harness_dir.parent / ".harness-shared" / "lessons"
+        # A1 接通点:从 rules.yaml 读 experience_market.min_score 作为默认阈值
+        self._configured_min_score = self._load_min_score_from_rules()
+
+    def _load_min_score_from_rules(self) -> float:
+        """读 rules.yaml `experience_market.min_score`,缺失/异常 → DEFAULT_MIN_SCORE。"""
+        rules_file = self.harness_dir / "rules.yaml"
+        if not rules_file.exists():
+            return self.DEFAULT_MIN_SCORE
+        try:
+            import yaml
+            data = yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return self.DEFAULT_MIN_SCORE
+        raw = ((data.get("experience_market") or {}).get("min_score"))
+        if isinstance(raw, (int, float)) and raw >= 0:
+            return float(raw)
+        return self.DEFAULT_MIN_SCORE
 
     # -- 公共 API：CRUD ------------------------------------------------------
 
@@ -278,18 +295,20 @@ class ExperienceMarket:
         self,
         context: Dict[str, Any],
         limit: int = 5,
-        min_score: float = DEFAULT_MIN_SCORE,
+        min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """按 context 召回相关 lesson，按 score 降序。
 
         返回 dict 列表（含 score），便于直接 JSON 序列化给 prompt 注入器使用。
+        min_score 缺省 → 走构造时从 rules.yaml 读取的值,再不行回 DEFAULT_MIN_SCORE。
         """
+        threshold = min_score if min_score is not None else self._configured_min_score
         scored: List[tuple] = []
         for lesson in self.list_lessons():
             if self._is_expired(lesson):
                 continue
             score = lesson.matches(context)
-            if score >= min_score:
+            if score >= threshold:
                 scored.append((score, lesson))
         scored.sort(key=lambda x: x[0], reverse=True)
 

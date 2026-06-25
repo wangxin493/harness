@@ -242,6 +242,36 @@ class UnknownDirConflictTests(unittest.TestCase):
         final = resolver.apply_user_choices(plan, {})
         self.assertNotIn("utils", final["scanner"]["exclude_dirs"])
 
+    def test_custom_layer_in_rules_appears_as_choice(self) -> None:
+        """B1: default_rules 里加自定义 layer → unknown-dir conflict 选项包含它。"""
+        custom_rules = _default_rules()
+        custom_rules["architecture"]["layers"].append({
+            "name": "widget",
+            "paths": ["src/widgets/"],
+            "can_import": ["hook", "service", "type"],
+        })
+        plan = resolve_init(custom_rules, self.report)
+        c = next(c for c in plan.conflicts if c.id == "unknown-dir:utils")
+        keys = {ch.key for ch in c.choices}
+        self.assertIn("widget", keys,
+                      "自定义 layer 名应作为 unknown-dir 的可选项")
+
+    def test_apply_to_custom_layer(self) -> None:
+        """映射到自定义 layer → paths 被追加。"""
+        custom_rules = _default_rules()
+        custom_rules["architecture"]["layers"].append({
+            "name": "widget",
+            "paths": ["src/widgets/"],
+            "can_import": [],
+        })
+        resolver = InitResolver(custom_rules, self.report)
+        plan = resolver.resolve()
+        final = resolver.apply_user_choices(
+            plan, {"unknown-dir:utils": "widget"})
+        widget = [L for L in final["architecture"]["layers"]
+                  if L["name"] == "widget"][0]
+        self.assertIn("src/utils/", widget["paths"])
+
 
 # ---------------------------------------------------------------------------
 # Naming conflict

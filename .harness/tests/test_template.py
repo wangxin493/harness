@@ -270,6 +270,70 @@ class TestGenerate(unittest.TestCase):
         self.assertTrue(result.written)
         self.assertEqual(result.file, "src/components/UserCard.tsx")
 
+    def test_page_prefers_path_with_screen_substring(self):
+        """B5: page kind 默认 prefer_path_contains=[page,screen,view]。
+
+        rules.yaml 只有 src/screens/(没有 src/pages/) → page 自动落到 src/screens/。
+        """
+        rules = textwrap.dedent("""\
+            architecture:
+              layers:
+                - name: component
+                  paths: ["src/screens/", "src/components/"]
+                  can_import: ["hook", "service", "type"]
+                - name: hook
+                  paths: ["src/hooks/"]
+                  can_import: ["service", "type"]
+                - name: service
+                  paths: ["src/api/"]
+                  can_import: ["type"]
+                - name: type
+                  paths: ["src/types/"]
+                  can_import: []
+            naming:
+              component: PascalCase
+              hook: camelCase-with-use-prefix
+              service: camelCase-with-Service-suffix
+              type: PascalCase
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(
+            rules, encoding="utf-8")
+        gen = TemplateGenerator(project_dir=self.fx.root)
+        result = gen.generate("page", "TodoPage")
+        self.assertTrue(result.written)
+        # 子串 "screen" 命中 → 落到 src/screens/
+        self.assertEqual(result.file, "src/screens/TodoPage.tsx")
+
+    def test_custom_prefer_path_contains_overrides_default(self):
+        """B5: rules.yaml templates.kinds.page.prefer_path_contains 自定义覆盖默认。"""
+        rules = textwrap.dedent("""\
+            architecture:
+              layers:
+                - name: component
+                  paths: ["src/routes/", "src/components/"]
+                  can_import: ["hook", "service", "type"]
+                - name: hook
+                  paths: ["src/hooks/"]
+                  can_import: []
+                - name: service
+                  paths: ["src/api/"]
+                  can_import: []
+                - name: type
+                  paths: ["src/types/"]
+                  can_import: []
+            templates:
+              kinds:
+                page:
+                  prefer_path_contains: ["route"]
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(
+            rules, encoding="utf-8")
+        gen = TemplateGenerator(project_dir=self.fx.root)
+        result = gen.generate("page", "TodoPage")
+        self.assertTrue(result.written)
+        # 自定义 "route" 命中 src/routes/
+        self.assertEqual(result.file, "src/routes/TodoPage.tsx")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,6 +81,7 @@ class InitResolver:
     """
 
     # 默认 layer 名（probe 用同一套词表，保持一致）
+    # B1: 仅作为 _layer_names() 的兜底,实际值优先来自 default_rules.architecture.layers
     _LAYER_NAMES = ("component", "hook", "service", "type", "page")
 
     # 命名风格关键字 → 探测层指标的最小命中比例
@@ -94,6 +95,16 @@ class InitResolver:
     def __init__(self, default_rules: Dict[str, Any], report: ProbeReport) -> None:
         self.default_rules = copy.deepcopy(default_rules)
         self.report = report
+
+    def _layer_names(self) -> List[str]:
+        """B1: 从 default_rules 读 layer 名清单,缺失时回 _LAYER_NAMES 兜底。
+
+        让 init_resolver 不再写死"只识别 component/hook/service/type/page",
+        rules.yaml 里加 `layer: widget` 后,unknown-dir conflict 自动多出 widget 选项。
+        """
+        layers = ((self.default_rules or {}).get("architecture") or {}).get("layers") or []
+        names = [l.get("name") for l in layers if isinstance(l, dict) and l.get("name")]
+        return names if names else list(self._LAYER_NAMES)
 
     # ---- 主入口 ----------------------------------------------------------
 
@@ -255,7 +266,7 @@ class InitResolver:
                     label=f"映射为 {name}",
                     detail=f"把 {L.path} 加进 layer '{name}' 的 paths",
                 )
-                for name in self._LAYER_NAMES
+                for name in self._layer_names()
             ]
             choices.append(ConflictChoice(
                 key="ignore",

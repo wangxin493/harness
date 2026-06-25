@@ -6,10 +6,12 @@
 # - stderr+exit 2: 拦截，附 hookSpecificOutput JSON 给 Agent
 # - exit 0: 验证通过
 #
-# 设计要点（执行清单 P0 #5）：
+# 设计要点：
 # - 统一调用 .harness/commands/harness validate <file>，不再直连 lib/validator.py
-# - 治理模式 off → 直接放行（mode-config.json）
-# - 仅校验 src/ 下的 .ts/.tsx/.d.ts
+# - fast-path（A2）：source hooks/.config.sh 后用纯 bash 做扩展名 / source_root /
+#   mode==off 过滤；命中不到才进 Python CLI，省去冷启动开销。
+# - .config.sh 缺失 / 过期 → 兜底走原 CLI 路径（向后兼容）。
+# - 仅校验 src/ 下的 .ts/.tsx/.d.ts（默认；可被 rules.yaml scanner.* 覆盖）
 
 set -uo pipefail
 
@@ -22,7 +24,22 @@ if [ ! -d "$HARNESS_DIR" ] || [ ! -x "$HARNESS_BIN" ]; then
     exit 0
 fi
 
-# --- 治理模式：off → 跳过 -------------------------------------------------
+# --- fast-path 配置：harness generate 写出来的 .config.sh ------------------
+HARNESS_CONFIG="$HARNESS_DIR/hooks/.config.sh"
+# 默认值（.config.sh 缺失时兜底；尽量贴近 rules.yaml 默认）
+HARNESS_SOURCE_ROOT='src'
+HARNESS_INCLUDE_EXT=('.ts' '.tsx' '.d.ts')
+HARNESS_EXCLUDE_DIRS=('node_modules' 'dist' 'build' '.git' '.harness')
+HARNESS_EXCLUDE_GLOBS=()
+HARNESS_MODE='strict'
+HARNESS_EXPERIENCE_ENABLED=1
+# shellcheck disable=SC1090
+[ -f "$HARNESS_CONFIG" ] && . "$HARNESS_CONFIG"
+
+# --- 治理模式：off → 跳过（先读 .config.sh，再读 mode-config.json 兜底）---
+if [ "${HARNESS_MODE:-strict}" = "off" ]; then
+    exit 0
+fi
 MODE_CONFIG="$HARNESS_DIR/mode-config.json"
 if [ -f "$MODE_CONFIG" ]; then
     MODE=$(python3 -c "
@@ -63,9 +80,34 @@ case "$FILE_PATH" in
     *)                REL_PATH="$FILE_PATH" ;;
 esac
 
-# 是否在 harness 关心的范围内由 CLI 判断（读 rules.yaml scanner.source_root
-# / include_extensions / exclude_*），shell 不再写死 src/*.ts/*.tsx/*.d.ts。
-# exit 0：跳过；exit 1：参与校验。任何异常一律放行（exit 0），保持兼容。
+# --- fast-path：纯 bash 过滤 ----------------------------------------------
+# 不在 source_root 下 → 跳过
+if [ -n "${HARNESS_SOURCE_ROOT:-}" ]; then
+    case "$REL_PATH" in
+        "${HARNESS_SOURCE_ROOT}"/*) : ;;  # 命中
+        *) exit 0 ;;
+    esac
+fi
+
+# 不在 include_extensions 之列 → 跳过
+_ext_ok=0
+for _ext in "${HARNESS_INCLUDE_EXT[@]:-}"; do
+    [ -z "$_ext" ] && continue
+    case "$REL_PATH" in
+        *"$_ext") _ext_ok=1; break ;;
+    esac
+done
+[ $_ext_ok -eq 0 ] && exit 0
+
+# 命中 exclude_dirs → 跳过
+for _xd in "${HARNESS_EXCLUDE_DIRS[@]:-}"; do
+    [ -z "$_xd" ] && continue
+    case "$REL_PATH" in
+        "$_xd"/*|*/"$_xd"/*) exit 0 ;;
+    esac
+done
+
+# CLI 二次确认（exclude_globs 等复杂规则交给 CLI 判断）
 export HARNESS_PROJECT_DIR="$PROJECT_DIR"
 if ! "$HARNESS_BIN" should-validate "$REL_PATH" >/dev/null 2>&1; then
     exit 0
