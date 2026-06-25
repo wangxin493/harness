@@ -15,7 +15,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 # 让 `lib.xxx` 能被 import：CLI 通过 commands/harness wrapper 启动时
 # .harness/ 已加入 sys.path；这里兜底一下，便于直接 `python lib/cli.py`。
@@ -1244,6 +1244,177 @@ def init_cmd(dry_run: bool, auto_yes: bool, as_json: bool) -> None:
     click.echo("\n下一步：")
     click.echo("   1) `harness install --agent <claude|ducc|baidu-cc>` 接通 hook")
     click.echo("   2) `harness scan` 生成 .harness/generated/claude.md")
+
+
+# -- setup (one-command bootstrap) ----------------------------------------
+
+
+@cli.command("setup")
+@click.option("--agent", "agent", required=True,
+              type=click.Choice(_SUPPORTED_AGENTS),
+              help="目标 Agent；必填，没有默认值（不同 Agent 安装位置不同）")
+@click.option("--interactive", is_flag=True,
+              help="init 阶段走交互模式（默认 --yes 不交互）")
+@click.option("--json", "as_json", is_flag=True,
+              help="以 JSON 输出每阶段结果（聚合）")
+def setup_cmd(agent: str, interactive: bool, as_json: bool) -> None:
+    """一条命令搞定接入：init + install + scan（fail-fast，任一阶段失败即退出）。
+
+    等价于：
+      harness init --yes        # --interactive 时去掉 --yes
+      harness install --agent <agent>
+      harness scan
+
+    适合"刚 cp 完 .harness/，立即就要能用"的场景；不想交互就这条命令一把梭。
+    init 已经探测过的项目重跑也安全（rules.yaml 已存在会确认覆盖）。
+    """
+    project_dir = _resolve_project_dir()
+    stages: List[Dict[str, Any]] = []
+
+    def _stage(title: str) -> None:
+        if not as_json:
+            click.echo(f"\n━━━ {title} ━━━")
+
+    # ---- 1) init ------------------------------------------------------------
+    _stage("[1/3] init — 探测 + 生成 rules.yaml")
+    try:
+        report = probe_project(project_dir)
+        default_rules = _load_default_rules_for_init()
+        resolver = InitResolver(default_rules, report)
+        plan = resolver.resolve()
+
+        if not as_json:
+            click.echo(_render_plan_human(plan, project_dir))
+
+        answers: dict = {}
+        if plan.conflicts and interactive:
+            click.echo("请逐条选择：")
+            for c in plan.conflicts:
+                answers[c.id] = _prompt_for_choice(c)
+        # 非 interactive：answers 留空，apply 会回落 default_choice
+
+        rules_path = project_dir / ".harness" / "rules.yaml"
+        if rules_path.exists() and not as_json and not interactive:
+            # 一键模式默认覆盖（用户跑 setup 就是接受所有默认）；
+            # 但保留交互模式的二次确认体验
+            pass
+        elif rules_path.exists() and interactive:
+            if not click.confirm(
+                f"⚠️ {rules_path.relative_to(project_dir)} 已存在，覆盖？",
+                default=False,
+            ):
+                if as_json:
+                    click.echo(json.dumps(
+                        {"stage": "init", "skipped": "user-cancelled"},
+                        ensure_ascii=False, indent=2,
+                    ))
+                else:
+                    click.echo("已取消 setup（init 阶段）。")
+                sys.exit(1)
+
+        final_rules = resolver.apply_user_choices(plan, answers)
+        written = _write_init_outputs(project_dir, final_rules, plan)
+        stages.append({
+            "stage": "init",
+            "ok": True,
+            "written": [str(p.relative_to(project_dir))
+                        if _is_under(p, project_dir) else str(p)
+                        for p in written],
+            "conflicts": [c.id for c in plan.conflicts],
+            "interactive": interactive,
+        })
+        if not as_json:
+            click.echo("✅ init 完成")
+    except Exception as exc:  # noqa: BLE001
+        _emit_setup_fail(stages, "init", exc, as_json)
+        sys.exit(1)
+
+    # ---- 2) install ---------------------------------------------------------
+    _stage(f"[2/3] install — 注册 PostToolUse hook ({agent})")
+    try:
+        installer = get_installer(agent, project_dir)
+        result = installer.install(dry_run=False)
+        stages.append({
+            "stage": "install",
+            "ok": True,
+            "agent": agent,
+            "changes": result.to_dict(),
+        })
+        if not as_json:
+            _print_install_changes(result, project_dir)
+            click.echo("✅ install 完成")
+    except Exception as exc:  # noqa: BLE001
+        _emit_setup_fail(stages, "install", exc, as_json)
+        sys.exit(1)
+
+    # ---- 3) scan ------------------------------------------------------------
+    _stage("[3/3] scan — 生成 generated/*.md")
+    try:
+        scanner = IncrementalScanner(project_dir=project_dir)
+        scan_result = scanner.scan(force_full=False)
+        summary = scan_result.summary()
+        try:
+            gen_result = _build_generator(project_dir).generate_all()
+            generated_files = gen_result.written
+        except Exception as gen_exc:
+            generated_files = []
+            if not as_json:
+                click.echo(f"⚠️  scan 完成但 generate 失败: {gen_exc}",
+                           err=True)
+        stages.append({
+            "stage": "scan",
+            "ok": True,
+            "summary": dict(summary),
+            "generated": generated_files,
+        })
+        if not as_json:
+            click.echo(f"   文件数: {summary['total_files']}")
+            click.echo(f"   组件:   {summary['total_components']}")
+            click.echo(f"   Hooks:  {summary['total_hooks']}")
+            click.echo(f"   APIs:   {summary['total_apis']}")
+            if generated_files:
+                click.echo(f"📝 已生成: {', '.join(generated_files)}")
+            click.echo("✅ scan 完成")
+    except Exception as exc:  # noqa: BLE001
+        _emit_setup_fail(stages, "scan", exc, as_json)
+        sys.exit(1)
+
+    # ---- 总结 ---------------------------------------------------------------
+    if as_json:
+        click.echo(json.dumps(
+            {"ok": True, "agent": agent, "stages": stages},
+            ensure_ascii=False, indent=2,
+        ))
+        return
+
+    click.echo("\n🎉 Harness 接入完成！")
+    click.echo("   下一步：")
+    click.echo(f"   • 重启 / 重开 {agent} 让其重新读 hook 配置")
+    click.echo("   • 让 Agent 编辑 src/ 下文件，违规会被自动拦截")
+    click.echo("   • 改规则：编辑 .harness/rules.yaml 后跑 `harness generate`")
+
+
+def _is_under(p: Path, root: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _emit_setup_fail(
+    stages: List[Dict[str, Any]], stage: str, exc: BaseException,
+    as_json: bool,
+) -> None:
+    """setup fail-fast：在 stages 尾部加失败记录，按格式输出。"""
+    stages.append({"stage": stage, "ok": False, "error": str(exc)})
+    if as_json:
+        click.echo(json.dumps(
+            {"ok": False, "failed_stage": stage, "stages": stages},
+            ensure_ascii=False, indent=2,
+        ))
+    else:
+        click.echo(f"\n❌ setup 在 [{stage}] 阶段失败：{exc}", err=True)
 
 
 if __name__ == "__main__":
