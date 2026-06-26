@@ -97,14 +97,23 @@ class InitResolver:
         self.report = report
 
     def _layer_names(self) -> List[str]:
-        """B1: 从 default_rules 读 layer 名清单,缺失时回 _LAYER_NAMES 兜底。
+        """B1: 返回 rules-defined layer 名 ∪ 内置兜底,保持顺序去重。
 
         让 init_resolver 不再写死"只识别 component/hook/service/type/page",
         rules.yaml 里加 `layer: widget` 后,unknown-dir conflict 自动多出 widget 选项。
+        用并集是为了:即便用户裁剪了 default_rules.layers(只留 component+hook),
+        page/service/type 这些 KindSpec 仍然认得的名字也不会从 conflict 选项里消失。
         """
         layers = ((self.default_rules or {}).get("architecture") or {}).get("layers") or []
-        names = [l.get("name") for l in layers if isinstance(l, dict) and l.get("name")]
-        return names if names else list(self._LAYER_NAMES)
+        defined = [l.get("name") for l in layers if isinstance(l, dict) and l.get("name")]
+        # 顺序:先 rules 里声明的(保留用户优先级),再 _LAYER_NAMES 里没出现过的
+        seen: set = set()
+        merged: List[str] = []
+        for name in list(defined) + list(self._LAYER_NAMES):
+            if name and name not in seen:
+                seen.add(name)
+                merged.append(name)
+        return merged
 
     # ---- 主入口 ----------------------------------------------------------
 

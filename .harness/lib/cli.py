@@ -102,29 +102,36 @@ def scan_cmd(full: bool, no_generate: bool, as_json: bool,
     scanner = IncrementalScanner(project_dir=project_dir)
 
     # A1 接通点:experience_market.auto_pull → scan 前自动 sync
+    auto_pull_warning: Optional[str] = None
     market_cfg = _load_experience_config(project_dir)
     if market_cfg.get("enabled", True) and market_cfg.get("auto_pull", True):
         try:
             _build_market(project_dir).sync(remote=False)
         except Exception as exc:
+            auto_pull_warning = f"auto_pull 失败,继续 scan: {exc}"
             if not as_json:
-                click.echo(f"⚠️  auto_pull 失败,继续 scan: {exc}", err=True)
+                click.echo(f"⚠️  {auto_pull_warning}", err=True)
 
     result = scanner.scan(force_full=full)
     summary = result.summary()
 
     generated_files: List[str] = []
+    generate_warning: Optional[str] = None
     if not no_generate:
         try:
             gen_result = _build_generator(project_dir).generate_all()
             generated_files = gen_result.written
         except Exception as exc:  # generate 失败不应阻断 scan
+            generate_warning = f"scan 完成但 generate 失败: {exc}"
             if not as_json:
-                click.echo(f"⚠️  scan 完成但 generate 失败: {exc}", err=True)
+                click.echo(f"⚠️  {generate_warning}", err=True)
 
     if as_json:
         payload = dict(summary)
         payload["generated"] = generated_files
+        warnings = [w for w in (auto_pull_warning, generate_warning) if w]
+        if warnings:
+            payload["warnings"] = warnings
         click.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
@@ -549,6 +556,18 @@ def mode_cmd(target: str, as_json: bool) -> None:
     else:
         mm.set_mode(GovernanceMode(target))
         info = mm.get_mode_info()
+
+    # 切换 mode 后同步刷新 .config.sh,让 hook fast-path 立刻看到新 mode。
+    # 不跑就得等下一次 scan/generate,期间 hook 会按旧 mode 工作 → 用户体感失灵。
+    if target not in ("show",):
+        try:
+            _build_generator(project_dir).generate_all()
+        except Exception as exc:  # noqa: BLE001
+            # generate 失败不阻断 mode 切换,但要在非 JSON 模式提示用户手动刷一次
+            if not as_json:
+                click.echo(f"⚠️  mode 已切换,但同步刷新 .config.sh 失败: {exc}",
+                           err=True)
+                click.echo("   请手动 `harness generate` 或下次 scan 后生效。", err=True)
 
     if as_json:
         click.echo(json.dumps(info, ensure_ascii=False, indent=2))

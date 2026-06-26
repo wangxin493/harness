@@ -305,14 +305,27 @@ def _build_kind_specs(rules: Dict) -> Dict[str, KindSpec]:
 
 
 def _as_str_list(value) -> List[str]:
-    """把 yaml 读出来的可能是 None/str/list 的值规范成 List[str]。"""
+    """把 yaml 读出来的可能是 None/str/list 的值规范成 List[str],去重 + 过滤空串。
+
+    顺序保留首次出现位置 —— ``["page", "view", "page"]`` 归一成 ``["page", "view"]``。
+    """
     if value is None:
         return []
     if isinstance(value, str):
         return [value] if value else []
-    if isinstance(value, list):
-        return [str(v) for v in value if v]
-    return []
+    if not isinstance(value, list):
+        return []
+    seen: set = set()
+    out: List[str] = []
+    for raw in value:
+        if not raw:
+            continue
+        s = str(raw)
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
 
 
 # ---------------------------------------------------------------------------

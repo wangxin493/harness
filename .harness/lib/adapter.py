@@ -156,17 +156,28 @@ def _render_project_constraints(rules: Dict[str, Any]) -> str:
           - "纯字符串也行,直接当一条约束"
 
     返回值为空字符串 → adapter 不渲染整个章节。
+    缺 title 的 dict 项会被静默跳过(generate 时不应该把"(未命名约束)"这种
+    bug 视觉糊到 generated/*.md 里;人写漏 title 的概率远大于故意留空)。
     """
     items = (rules or {}).get("project_constraints") or []
     if not isinstance(items, list) or not items:
         return ""
     lines = []
-    for i, item in enumerate(items, 1):
+    idx = 0
+    for item in items:
         if isinstance(item, str):
-            lines.append(f"{i}. {item}")
+            stripped = item.strip()
+            if not stripped:
+                continue
+            idx += 1
+            lines.append(f"{idx}. {stripped}")
         elif isinstance(item, dict):
-            title = item.get("title") or "(未命名约束)"
-            lines.append(f"{i}. **{title}**")
+            title = (item.get("title") or "").strip()
+            if not title:
+                # 缺 title 的 dict 项跳过 —— 见 docstring
+                continue
+            idx += 1
+            lines.append(f"{idx}. **{title}**")
             why = item.get("why")
             if why:
                 lines.append(f"   - 为什么: {why}")
@@ -177,15 +188,19 @@ def _render_project_constraints(rules: Dict[str, Any]) -> str:
 
 
 def _render_constraints_section(rules: Dict[str, Any]) -> str:
-    """渲染 ## 🚨 项目硬约束 章节;无约束时返回空字符串(整段不出现)。"""
+    """渲染 ## 🚨 项目硬约束 章节;无约束时返回空字符串(整段不出现)。
+
+    注:返回值不带尾部空行 —— 由 `_render_shared_body` 的 `"\\n\\n".join` 统一处理
+    section 间空行,避免双空行拼接。
+    """
     body = _render_project_constraints(rules)
     if not body:
         return ""
     return (
-        "## 🚨 项目硬约束（必读）\n\n"
+        "## 🚨 项目硬约束(必读)\n\n"
         "> 业务级硬约束,优先于下方架构/导入/命名规范。违反这些约束的代码"
         "应直接拒绝;不写在 lessons 里因为 lesson 是经验、约束是底线。\n\n"
-        f"{body}\n\n"
+        f"{body}"
     )
 
 
@@ -355,8 +370,11 @@ def _render_shared_body(
 
     constraints = _render_constraints_section(ctx.rules)
 
-    parts: List[str] = [
-        constraints + "## ⛔ 强制规则",
+    parts: List[str] = []
+    if constraints:
+        parts.append(constraints)
+    parts.extend([
+        "## ⛔ 强制规则",
         "### 三层架构",
         arch_block,
         "### 导入规则",
@@ -365,7 +383,7 @@ def _render_shared_body(
         _render_naming(ctx.rules),
         "## 📊 项目当前状态",
         _render_stats(ctx.project_context),
-    ]
+    ])
 
     for sec in sections or []:
         parts.append(sec["title"])
@@ -863,7 +881,9 @@ class HooksConfigAdapter(AgentAdapter):
         source_root = scanner.get("source_root") or "src"
         include_ext = scanner.get("include_extensions") or [".ts", ".tsx", ".d.ts"]
         exclude_dirs = scanner.get("exclude_dirs") or []
-        exclude_globs = scanner.get("exclude_globs") or []
+        # exclude_globs 不再输出:复杂 glob 交给 `harness should-validate` CLI 兜底,
+        # bash glob (case 模式) 与 Python fnmatch 语义不完全一致(尤其 `**`),
+        # 维护两套引擎容易引 bug,不如 fork 一次 CLI 干净。
 
         market = (ctx.rules or {}).get("experience_market") or {}
         market_enabled = 1 if market.get("enabled", True) else 0
@@ -877,7 +897,6 @@ class HooksConfigAdapter(AgentAdapter):
             f"HARNESS_SOURCE_ROOT={_bash_quote(source_root)}\n"
             f"HARNESS_INCLUDE_EXT={_bash_array(list(include_ext))}\n"
             f"HARNESS_EXCLUDE_DIRS={_bash_array(list(exclude_dirs))}\n"
-            f"HARNESS_EXCLUDE_GLOBS={_bash_array(list(exclude_globs))}\n"
             f"HARNESS_MODE={_bash_quote(ctx.mode)}\n"
             f"HARNESS_EXPERIENCE_ENABLED={market_enabled}\n"
         )

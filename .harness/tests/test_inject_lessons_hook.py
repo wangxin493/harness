@@ -171,7 +171,6 @@ class TestInjectLessonsHook(unittest.TestCase):
             "HARNESS_SOURCE_ROOT='src'\n"
             "HARNESS_INCLUDE_EXT=('.ts' '.tsx' '.d.ts')\n"
             "HARNESS_EXCLUDE_DIRS=()\n"
-            "HARNESS_EXCLUDE_GLOBS=()\n"
             "HARNESS_MODE='strict'\n"
             "HARNESS_EXPERIENCE_ENABLED=0\n",
             encoding="utf-8",

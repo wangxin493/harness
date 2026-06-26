@@ -116,6 +116,7 @@ class Doctor:
         report.checks.append(self._check_rules_yaml())
         report.checks.append(self._check_dependency_graph())
         report.checks.append(self._check_mode_config())
+        report.checks.append(self._check_hooks_config())
         report.checks.append(self._check_readme_drift())
         report.checks.append(self._check_git_repo())
         report.checks.append(self._check_shared_dir())
@@ -289,6 +290,59 @@ class Doctor:
                 message=f"mode-config.json 损坏: {exc}",
                 suggestion="删除后用 harness mode 重新设置",
             )
+
+    def _check_hooks_config(self) -> CheckResult:
+        """检查 hooks/.config.sh 是否过期 —— rules.yaml / mode-config.json 比它新就警告。
+
+        .config.sh 是 hook fast-path 的真理来源,如果比 rules.yaml 旧,bash 那边
+        会按旧的 source_root/include_ext/exclude_dirs/mode 走,新规则要等下次
+        scan/generate 才生效。doctor 把这个 staleness 显式告诉用户,免得排查
+        "为什么我改了 rules.yaml 但 hook 还按老的走"。
+        """
+        path = self.harness_dir / "hooks" / ".config.sh"
+        if not path.exists():
+            return CheckResult(
+                name="hooks-config",
+                severity="info",
+                message=".harness/hooks/.config.sh 不存在",
+                suggestion="跑 `harness generate` 生成 hook fast-path 配置",
+            )
+        try:
+            cfg_mtime = path.stat().st_mtime
+        except OSError as exc:
+            return CheckResult(
+                name="hooks-config",
+                severity="warning",
+                message=f"读取 .config.sh 失败: {exc}",
+                suggestion="跑 `harness generate` 重新生成",
+            )
+
+        # 与 rules.yaml / mode-config.json 比 mtime
+        stale_sources: List[str] = []
+        for src_name in ("rules.yaml", "mode-config.json"):
+            src_path = self.harness_dir / src_name
+            if not src_path.exists():
+                continue
+            try:
+                if src_path.stat().st_mtime > cfg_mtime:
+                    stale_sources.append(src_name)
+            except OSError:
+                continue
+        if stale_sources:
+            return CheckResult(
+                name="hooks-config",
+                severity="warning",
+                message=(
+                    f"hooks/.config.sh 早于 {', '.join(stale_sources)},"
+                    "hook fast-path 可能按旧配置工作"
+                ),
+                suggestion="跑 `harness generate` 同步 .config.sh",
+            )
+        return CheckResult(
+            name="hooks-config",
+            severity="ok",
+            message="hooks/.config.sh 与 rules.yaml/mode-config.json 同步",
+        )
 
     def _check_readme_drift(self) -> CheckResult:
         """.harness/README.md 是否与当前 rules/lessons/mode 一致。
