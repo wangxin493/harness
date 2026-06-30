@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from lib.ast_parser import TypeScriptParser
 
@@ -59,6 +60,11 @@ class CodeValidator:
         self.rules = rules if rules is not None else self._load_rules()
         self.layers = self._normalize_layers(
             self.rules.get("architecture", {}).get("layers", [])
+        )
+        self.naming_rules: Dict[str, str] = dict(self.rules.get("naming") or {})
+        # 别名按前缀长度降序，确保 longer-prefix 优先匹配
+        self.import_aliases: List[Tuple[str, str]] = self._normalize_import_aliases(
+            self.rules.get("scanner", {}).get("import_aliases", [])
         )
         self.forbidden_imports = list(
             self.rules.get("imports", {}).get("forbidden_imports", []) or []
@@ -166,7 +172,11 @@ class CodeValidator:
         if self._cfg_enabled("hook_call_check", default=True):
             issues.extend(self._check_hook_calls(rel_path, layer, parse_result))
 
-        # 5) 命名相似度（新建 / 改名时与已有 component / hook / api 撞车）
+        # 5) 命名格式（rules.yaml naming.<layer>）
+        if self._cfg_enabled("naming", default=True):
+            issues.extend(self._check_naming(rel_path, layer, parse_result))
+
+        # 6) 命名相似度（新建 / 改名时与已有 component / hook / api 撞车）
         if self._cfg_enabled("name_similarity", default=True):
             issues.extend(self._check_name_similarity(rel_path, layer, parse_result))
 
@@ -242,6 +252,91 @@ class CodeValidator:
                 ))
         return issues
 
+    # -- 命名格式 ------------------------------------------------------------
+
+    _PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+    _CAMEL_RE = re.compile(r"^[a-z][A-Za-z0-9]*$")
+
+    def _check_naming(self, rel_path: str, layer: str, parse_result) -> List[Issue]:
+        style = (self.naming_rules.get(layer) or "").strip()
+        if not style or layer == "unknown":
+            return []
+
+        names = self._extract_names_for_naming(layer, parse_result)
+        if not names:
+            names = [Path(rel_path).stem]
+
+        issues: List[Issue] = []
+        for name in names:
+            reason = self._validate_name_style(name, style)
+            if not reason:
+                continue
+            issues.append(Issue(
+                rule_id=f"naming-{layer}",
+                severity="warning",
+                category="naming",
+                message=f"{layer} 命名 {name} 不符合 {style}：{reason}",
+                file=rel_path,
+                suggestion=(
+                    f"请按 rules.yaml naming.{layer}={style} 调整命名，"
+                    "或在 init 时采纳项目现有风格。"
+                ),
+            ))
+        return issues
+
+    @staticmethod
+    def _extract_names_for_naming(layer: str, parse_result) -> List[str]:
+        if layer == "type":
+            return [
+                exp.name
+                for exp in parse_result.exports
+                if exp.kind in ("interface", "type", "enum")
+                and exp.name
+                and exp.name != "default"
+            ]
+        return CodeValidator._extract_primary_export_names(layer, parse_result)
+
+    @classmethod
+    def _validate_name_style(cls, name: str, style: str) -> Optional[str]:
+        validators: Dict[str, Callable[[str], Optional[str]]] = {
+            "PascalCase": cls._validate_pascal_name,
+            "camelCase": cls._validate_camel_name,
+            "camelCase-with-use-prefix": cls._validate_use_prefix_name,
+            "camelCase-with-Service-suffix": cls._validate_service_suffix_name,
+        }
+        validator = validators.get(style)
+        if validator is None:
+            return None
+        return validator(name)
+
+    @classmethod
+    def _validate_pascal_name(cls, name: str) -> Optional[str]:
+        if not cls._PASCAL_RE.match(name):
+            return "必须 PascalCase（首字母大写，只含字母数字）"
+        return None
+
+    @classmethod
+    def _validate_camel_name(cls, name: str) -> Optional[str]:
+        if not cls._CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+        return None
+
+    @classmethod
+    def _validate_use_prefix_name(cls, name: str) -> Optional[str]:
+        if not cls._CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+        if not (name.startswith("use") and len(name) > 3 and name[3].isupper()):
+            return "必须以 use 开头，且 use 后第一个字母大写（例 useTodos）"
+        return None
+
+    @classmethod
+    def _validate_service_suffix_name(cls, name: str) -> Optional[str]:
+        if not cls._CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+        if not name.endswith("Service") or name == "Service":
+            return "必须以 Service 结尾（例 userService）"
+        return None
+
     # -- 命名相似度 ---------------------------------------------------------
 
     def _check_name_similarity(
@@ -249,8 +344,8 @@ class CodeValidator:
     ) -> List[Issue]:
         cfg = self.checks_cfg.get("name_similarity") or {}
         threshold = float(cfg.get("threshold", 0.8))
-        # 用户可关闭
-        if threshold <= 0 or threshold >= 1:
+        # threshold <= 0 关闭；threshold=1.0 表示只检查完全同名。
+        if threshold <= 0 or threshold > 1:
             return []
 
         ctx = self._load_project_context()
@@ -286,9 +381,10 @@ class CodeValidator:
                 if ratio < threshold:
                     continue
                 same_name = my_name == existing_name
+                severity = self._name_similarity_severity(cfg, layer, same_name)
                 issues.append(Issue(
                     rule_id="name-similarity",
-                    severity="warning" if same_name else "info",
+                    severity=severity,
                     category="naming",
                     message=(
                         f"{layer} 命名 {my_name} 与已有 {existing_name} "
@@ -305,6 +401,23 @@ class CodeValidator:
         return issues
 
     @staticmethod
+    def _name_similarity_severity(cfg: dict, layer: str, same_name: bool) -> str:
+        """C6: service 层跨文件同名默认降为 info（老项目按业务域分文件常见）。
+
+        rules.yaml 可用 `checks.name_similarity.same_name_severity.<layer>` 覆盖：
+          checks:
+            name_similarity:
+              same_name_severity:
+                service: info    # 默认 info（降噪）
+                component: warning  # 若想恢复 warning 可显式写
+        """
+        if same_name:
+            per_layer_cfg = (cfg.get("same_name_severity") or {})
+            default = "info" if layer == "service" else "warning"
+            return per_layer_cfg.get(layer, default)
+        return "info"
+
+    @staticmethod
     def _extract_primary_export_names(layer: str, parse_result) -> List[str]:
         names: List[str] = []
         if layer == "component":
@@ -313,7 +426,7 @@ class CodeValidator:
                 if exp.returns_jsx or exp.kind == "default":
                     if exp.name and exp.name != "default":
                         names.append(exp.name)
-                    break
+                        break  # 只在真正 append 了名字时才停止搜索
         elif layer == "hook":
             for exp in parse_result.exports:
                 if exp.name and exp.name.startswith("use"):
@@ -356,18 +469,32 @@ class CodeValidator:
     def _infer_target_layer(self, source: str) -> Optional[str]:
         """根据 import source 反查目标 layer。
 
-        - @/foo → 把它视作 src/foo，再用 layer.paths 匹配
+        - 使用 scanner.import_aliases 把项目真实别名映射为项目内路径
+        - 保留 @/ → src/ 的默认兼容映射
         - 相对路径 / 外部包 → None（不参与架构检查）
         """
-        if not source.startswith("@/"):
+        synthetic = self._resolve_import_source(source)
+        if synthetic is None:
             return None
-        synthetic = "src/" + source[2:]
         for layer in self.layers:
             for prefix in layer["paths"]:
                 # 让 "src/api" 匹配 "src/api/" 前缀
                 normalized = prefix.rstrip("/")
                 if synthetic == normalized or synthetic.startswith(normalized + "/"):
                     return layer["name"]
+        return None
+
+    def _resolve_import_source(self, source: str) -> Optional[str]:
+        normalized_source = source.replace("\\", "/")
+        for prefix, target in self.import_aliases:
+            exact_prefix = prefix.rstrip("/")
+            if normalized_source == exact_prefix:
+                return target.rstrip("/")
+            if normalized_source.startswith(prefix):
+                suffix = normalized_source[len(prefix):].lstrip("/")
+                return target.rstrip("/") + (f"/{suffix}" if suffix else "")
+        if normalized_source.startswith("@/"):
+            return "src/" + normalized_source[2:]
         return None
 
     def _allowed_imports_for(self, layer_name: str) -> List[str]:
@@ -421,6 +548,20 @@ class CodeValidator:
                 "can_import": layer.get("can_import") or [],
             })
         return normalized
+
+    @staticmethod
+    def _normalize_import_aliases(aliases_cfg: List[Dict]) -> List[Tuple[str, str]]:
+        aliases: List[Tuple[str, str]] = []
+        for alias in aliases_cfg or []:
+            if not isinstance(alias, dict):
+                continue
+            prefix = (alias.get("prefix") or "").replace("\\", "/")
+            target = (alias.get("target") or "").replace("\\", "/")
+            if not prefix or not target:
+                continue
+            aliases.append((prefix.rstrip("/") + "/", target.rstrip("/") + "/"))
+        aliases.sort(key=lambda item: len(item[0]), reverse=True)
+        return aliases
 
 
 # ---------------------------------------------------------------------------
