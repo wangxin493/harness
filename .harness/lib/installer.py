@@ -54,12 +54,26 @@ CLAUDE_MD_END = "<!-- harness:end -->"
 CLAUDE_MD_BLOCK_BODY = """
 > 本节由 `harness install` 维护。规则随 `harness scan` 自动刷新。
 
+## Harness 接入说明
+
+本项目已接入 Harness 代码治理。Agent 写代码时应优先阅读并遵守：
+
 @.harness/generated/claude.md
 
-**工作流**：
+## 生成物职责
+
+- `.harness/rules.yaml`：项目规则源，定义分层、命名、导入边界和扫描范围
+- `.harness/generated/claude.md`：给 Claude Code 的当前项目规范与索引摘要
+- `.harness/context/`：扫描生成的项目索引、依赖图和增量缓存
+- `.claude/settings.json`：注册 PostToolUse hook，在写文件后触发校验和经验注入
+
+## 日常工作流
 
 - 修改 `src/**/*.{ts,tsx,d.ts}` 后，PostToolUse hook 会自动跑 `harness validate`，违规会被拦截并把错误塞回我让我自己改
+- 老项目默认只做增量治理：不主动修存量；改到老文件时按校验结果顺手修
 - 治理模式（拦截力度）切换：`harness mode <strict|relaxed|off>`
+- 重新生成 Agent 上下文：`harness scan`
+- 体检接入状态：`harness doctor`
 - 自动修复（仅 `import-forbidden` 子集）：`harness fix <file> --apply`
 - 同步团队经验：`harness sync`
 """

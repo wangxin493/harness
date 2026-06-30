@@ -120,6 +120,7 @@ class InitResolver:
     def resolve(self) -> ProposedPlan:
         plan = ProposedPlan(rules=copy.deepcopy(self.default_rules))
         self._resolve_aliases(plan)
+        self._resolve_source_root(plan)
         self._resolve_layers(plan)
         self._resolve_unknown_dirs(plan)
         self._resolve_naming(plan)
@@ -229,6 +230,33 @@ class InitResolver:
     def _fmt_aliases(items: List[tuple]) -> str:
         return ", ".join(f"{p}/ → {t}/" for p, t in items)
 
+    # ---- source_root ------------------------------------------------------
+
+    def _resolve_source_root(self, plan: ProposedPlan) -> None:
+        """C1: 采纳 probe 发现的双栈 source_root 提示。
+
+        老项目常见 `src/frontend` + `src/backend` 布局。probe 若发现 src/ 下
+        仅一个子目录含 ts/tsx，会在 notes 里放 `dual-stack-hint:<path>`；这里
+        将 scanner.source_root 改成该路径，并把其它顶层目录留给 unknown-dir
+        conflict 决策(ignore/skip)。
+        """
+        hints = [
+            n.split(":", 1)[1]
+            for n in self.report.notes
+            if isinstance(n, str) and n.startswith("dual-stack-hint:")
+        ]
+        if not hints:
+            return
+        source_root = hints[0].rstrip("/")
+        scanner = plan.rules.setdefault("scanner", {})
+        old = (scanner.get("source_root") or "src").rstrip("/")
+        if old == source_root:
+            return
+        scanner["source_root"] = source_root
+        plan.adopted_notes.append(
+            f"探测到双栈布局，scanner.source_root 采用 {source_root}（原为 {old}）",
+        )
+
     # ---- layer 路径 ------------------------------------------------------
 
     def _resolve_layers(self, plan: ProposedPlan) -> None:
@@ -263,7 +291,11 @@ class InitResolver:
     # ---- unknown 目录 ----------------------------------------------------
 
     def _resolve_unknown_dirs(self, plan: ProposedPlan) -> None:
-        """src/ 下不在常规词表里的目录 → 抛 conflict（Q3=A）。"""
+        """src/ 下不在常规词表里的目录 → 抛 conflict（Q3=A）。
+
+        C2: choices 末尾加 "new-layer:<dir_name>" 让用户新建自定义层。
+        C3: 0 个 ts/tsx 的目录 default_choice 改为 "ignore"。
+        """
         for L in self.report.layers:
             if L.name != "unknown":
                 continue
@@ -277,6 +309,15 @@ class InitResolver:
                 )
                 for name in self._layer_names()
             ]
+            # C2: 新建自定义层选项（以目录名为 layer 名）
+            choices.append(ConflictChoice(
+                key=f"new-layer:{dir_name}",
+                label=f"新建 layer（以目录名 '{dir_name}' 为层名）",
+                detail=(
+                    f"在 architecture.layers 追加 name='{dir_name}', "
+                    f"paths=[{L.path}], can_import=[]（事后手动补依赖关系）"
+                ),
+            ))
             choices.append(ConflictChoice(
                 key="ignore",
                 label="忽略（加进 scanner.exclude_dirs）",
@@ -287,6 +328,8 @@ class InitResolver:
                 label="先放着不处理",
                 detail="这次 init 不动这个目录，后续手动改 rules.yaml",
             ))
+            # C3: 0 ts/tsx → 最安全是 ignore；有文件 → skip（保持现状）
+            default = "ignore" if L.file_count == 0 else "skip"
             plan.conflicts.append(Conflict(
                 id=cid,
                 category="unknown-dir",
@@ -296,7 +339,7 @@ class InitResolver:
                     "请选择如何处理"
                 ),
                 choices=choices,
-                default_choice="skip",
+                default_choice=default,
             ))
 
     # ---- 命名风格 --------------------------------------------------------
@@ -326,19 +369,29 @@ class InitResolver:
                 ConflictChoice(
                     key="keep-default",
                     label=f"保留默认 '{default_style}'",
-                    detail=f"现状仅 {round(actual*100)}% 命中，validator 会报很多 naming-violation",
+                    detail=(
+                        f"现状仅 {round(actual*100)}% 命中，validator 会报 naming-violation。"
+                        "（注意：validator 只在 AI 修改文件时触发，存量代码不会被扫描，"
+                        "新增代码才受约束）"
+                    ),
                 ),
             ]
             if suggested and suggested != default_style:
                 choices.append(ConflictChoice(
                     key=f"adopt:{suggested}",
                     label=f"采纳现状风格 '{suggested}'",
-                    detail="把 naming 配置改成与现有代码一致",
+                    detail=(
+                        "把 naming 配置改成与现有代码一致，存量不报、新增代码按新风格约束。"
+                        "推荐老项目优先选此项，减少存量噪音。"
+                    ),
                 ))
             choices.append(ConflictChoice(
                 key="disable",
                 label="不校验该层命名",
-                detail=f"把 naming.{layer} 设为空字符串 / 删除",
+                detail=(
+                    f"把 naming.{layer} 设为空字符串，该层完全不做命名校验。"
+                    "适合命名极度混乱、短期不想引入任何约束的层。"
+                ),
             ))
             plan.conflicts.append(Conflict(
                 id=f"naming:{layer}",
@@ -402,28 +455,67 @@ class InitResolver:
         # alias / layer-path 当前是静默采纳，无 conflict 进这里
 
     @staticmethod
+    def _unknown_dir_path(conflict: Conflict, fallback_name: str) -> str:
+        """从 conflict.title 里恢复 unknown 目录完整路径。
+
+        conflict.id 只存最后一级目录名；双栈 source_root 下同名目录可能出现在
+        `src/frontend/<name>/`，apply 时必须保留完整 path。
+        """
+        marker = "未识别目录："
+        if marker in conflict.title:
+            rest = conflict.title.split(marker, 1)[1]
+            path = rest.split("（", 1)[0].strip()
+            if path:
+                return path.rstrip("/") + "/"
+        # fallback：尽量按当前 rules 的 source_root 还原，而不是硬编码 src/
+        return f"{fallback_name}/"
+
+    @staticmethod
     def _apply_unknown_dir(
         rules: Dict[str, Any], conflict: Conflict, choice: str,
     ) -> None:
         # conflict.id = "unknown-dir:<name>"
         dir_name = conflict.id.split(":", 1)[1]
-        dir_path = f"src/{dir_name}/"
+        dir_path = InitResolver._unknown_dir_path(conflict, dir_name)
         if choice == "skip":
             return
         if choice == "ignore":
             scanner = rules.setdefault("scanner", {})
             excludes = scanner.setdefault("exclude_dirs", [])
-            if dir_name not in excludes and dir_path not in excludes:
-                excludes.append(dir_name)
+            if dir_path not in excludes:
+                excludes.append(dir_path)
             return
-        # choice == layer name
+        if choice.startswith("new-layer"):
+            parts = choice.split(":", 1)
+            layer_name = parts[1] if len(parts) > 1 and parts[1] else dir_name
+            arch = rules.setdefault("architecture", {})
+            layers = arch.setdefault("layers", [])
+            for layer_def in layers:
+                if layer_def.get("name") == layer_name:
+                    paths = layer_def.setdefault("paths", [])
+                    if dir_path not in paths:
+                        paths.append(dir_path)
+                    return
+            layers.append({
+                "name": layer_name,
+                "paths": [dir_path],
+                "can_import": [],
+            })
+            return
+        # choice == layer name；若目标 layer 不存在，按用户选择创建同名 layer，避免静默丢失。
         arch = rules.setdefault("architecture", {})
-        for layer_def in arch.get("layers") or []:
+        layers = arch.setdefault("layers", [])
+        for layer_def in layers:
             if layer_def.get("name") == choice:
                 paths = layer_def.setdefault("paths", [])
                 if dir_path not in paths:
                     paths.append(dir_path)
                 return
+        layers.append({
+            "name": choice,
+            "paths": [dir_path],
+            "can_import": [],
+        })
 
     @staticmethod
     def _apply_naming(

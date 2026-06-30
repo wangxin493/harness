@@ -4,11 +4,14 @@
 - 别名一致 → 静默采纳，写 adopted_notes
 - 别名不一致（单个 / 多个）→ 写进 scanner.import_alias / import_aliases
 - layer 路径与默认不同 → 自动采纳探测值
-- src/ 下未识别目录 → 抛 unknown-dir conflict，含 layer/ignore/skip 三类选项
+- src/ 下未识别目录 → 抛 unknown-dir conflict，含 layer/new-layer/ignore/skip 选项
 - apply_user_choices: ignore → 加 exclude_dirs；选 layer → 进对应 paths
+- apply_user_choices: new-layer:<name> → 追加新 architecture.layers 条目
+- 0 ts/tsx 目录 default_choice = "ignore"（C3）
 - 命名风格背离 → 抛 naming conflict；sample_size<3 不打扰
 - info_notes 含框架 / 包管理器 / gitignore 建议
 - apply_user_choices 缺省项走 default_choice
+- 双栈布局 source_root 采纳（C1）
 """
 
 import copy
@@ -204,7 +207,8 @@ class UnknownDirConflictTests(unittest.TestCase):
         self.assertEqual(c.category, "unknown-dir")
         self.assertEqual(c.default_choice, "skip")
         keys = {ch.key for ch in c.choices}
-        # 应至少给出几个 layer 选项 + ignore + skip
+        # 应至少给出几个 layer 选项 + 新建 layer + ignore + skip
+        self.assertIn("new-layer:utils", keys)
         self.assertIn("ignore", keys)
         self.assertIn("skip", keys)
         self.assertIn("hook", keys)
@@ -213,7 +217,31 @@ class UnknownDirConflictTests(unittest.TestCase):
         resolver = InitResolver(_default_rules(), self.report)
         plan = resolver.resolve()
         final = resolver.apply_user_choices(plan, {"unknown-dir:utils": "ignore"})
-        self.assertIn("utils", final["scanner"]["exclude_dirs"])
+        self.assertIn("src/utils/", final["scanner"]["exclude_dirs"])
+
+    def test_ignore_preserves_dual_stack_full_path(self) -> None:
+        """ignore 双栈 unknown-dir 时写完整路径，而不是裸目录名。"""
+        report = _make_report(layers=[
+            LayerFinding(name="unknown", path="src/frontend/utils/", file_count=2,
+                         sample_names=["fmt"]),
+        ])
+        resolver = InitResolver(_default_rules(), report)
+        plan = resolver.resolve()
+        final = resolver.apply_user_choices(
+            plan, {"unknown-dir:utils": "ignore"})
+        excludes = final["scanner"]["exclude_dirs"]
+        self.assertIn("src/frontend/utils/", excludes)
+        self.assertNotIn("utils", excludes)
+
+    def test_apply_missing_layer_name_creates_layer(self) -> None:
+        """防御性兜底:未知 layer choice 不静默丢失。"""
+        resolver = InitResolver(_default_rules(), self.report)
+        plan = resolver.resolve()
+        final = resolver.apply_user_choices(
+            plan, {"unknown-dir:utils": "domain"})
+        layer = next(L for L in final["architecture"]["layers"]
+                     if L["name"] == "domain")
+        self.assertIn("src/utils/", layer["paths"])
 
     def test_apply_map_to_layer_adds_path(self) -> None:
         resolver = InitResolver(_default_rules(), self.report)
@@ -272,6 +300,29 @@ class UnknownDirConflictTests(unittest.TestCase):
                   if L["name"] == "widget"][0]
         self.assertIn("src/utils/", widget["paths"])
 
+    def test_new_layer_creates_custom_layer(self) -> None:
+        """C2: new-layer:<name> → architecture.layers 追加新自定义层。"""
+        resolver = InitResolver(_default_rules(), self.report)
+        plan = resolver.resolve()
+        final = resolver.apply_user_choices(
+            plan, {"unknown-dir:utils": "new-layer:utils"})
+        names = [L["name"] for L in final["architecture"]["layers"]]
+        self.assertIn("utils", names)
+        new_layer = next(L for L in final["architecture"]["layers"]
+                         if L["name"] == "utils")
+        self.assertIn("src/utils/", new_layer["paths"])
+        self.assertEqual(new_layer.get("can_import"), [])
+
+    def test_zero_file_dir_default_ignore(self) -> None:
+        """C3: 0 个 ts/tsx 文件的目录默认 ignore，不是 skip。"""
+        report = _make_report(layers=[
+            LayerFinding(name="unknown", path="src/backend/", file_count=0,
+                         sample_names=[]),
+        ])
+        plan = resolve_init(_default_rules(), report)
+        c = next(c for c in plan.conflicts if c.id == "unknown-dir:backend")
+        self.assertEqual(c.default_choice, "ignore")
+
 
 # ---------------------------------------------------------------------------
 # Naming conflict
@@ -314,6 +365,10 @@ class NamingConflictTests(unittest.TestCase):
         self.assertIn("disable", keys)
         # camel_ratio=1.0 → 应建议采纳 camelCase
         self.assertTrue(any(k == "adopt:camelCase" for k in keys), keys)
+        detail_text = "\n".join(ch.detail for ch in c.choices)
+        self.assertIn("只在 AI 修改文件时触发", detail_text)
+        self.assertIn("存量代码不会被扫描", detail_text)
+        self.assertIn("新增代码按新风格约束", detail_text)
 
     def test_apply_disable_clears_naming(self) -> None:
         report = _make_report(
@@ -409,6 +464,22 @@ class FullReportSmokeTests(unittest.TestCase):
         self.assertEqual(plan.conflicts, [])
         # adopted_notes 至少应提到别名沿用默认
         self.assertTrue(any("别名" in n for n in plan.adopted_notes))
+
+    def test_dual_stack_source_root_adopted(self) -> None:
+        """C1: probe 发现双栈 → source_root 被改成子目录。"""
+        report = _make_report(
+            notes=["dual-stack-hint:src/frontend"],
+            layers=[
+                LayerFinding(name="unknown", path="src/frontend/module/",
+                             file_count=5, sample_names=[]),
+            ],
+        )
+        plan = resolve_init(_default_rules(), report)
+        self.assertEqual(
+            plan.rules["scanner"]["source_root"],
+            "src/frontend",
+        )
+        self.assertTrue(any("source_root" in n for n in plan.adopted_notes))
 
 
 if __name__ == "__main__":

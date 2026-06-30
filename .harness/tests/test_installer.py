@@ -241,6 +241,10 @@ class TestClaudeInstallerClaudeMd(unittest.TestCase):
         self.assertIn(CLAUDE_MD_BEGIN, text)
         self.assertIn(CLAUDE_MD_END, text)
         self.assertIn("@.harness/generated/claude.md", text)
+        self.assertIn("Harness 接入说明", text)
+        self.assertIn("生成物职责", text)
+        self.assertIn("老项目默认只做增量治理", text)
+        self.assertIn("harness doctor", text)
 
     def test_append_block_when_md_exists_without_block(self) -> None:
         self.tmp.write("CLAUDE.md", "# 我的项目\n\n这是手写的说明。\n")
