@@ -16,8 +16,9 @@
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .probe import (
     AliasFinding,
@@ -290,17 +291,110 @@ class InitResolver:
 
     # ---- unknown 目录 ----------------------------------------------------
 
+    # ---- unknown 目录推测 ------------------------------------------------
+
+    # 目录名关键词 → 推测 layer，按精确度从高到低排列
+    _DIR_SUGGEST_MAP: List[Tuple[List[str], str, str]] = [
+        # (关键词列表, layer 名, 理由)
+        (["hook", "hooks", "composable", "composables"], "hook",
+         "目录名含 hook/composables，通常是 React Hook 层"),
+        (["service", "services", "api", "apis", "request", "requests", "http"],
+         "service",
+         "目录名含 service/api/request，通常是数据请求/服务层"),
+        (["type", "types", "model", "models", "interface", "interfaces",
+          "schema", "schemas", "entity", "entities"],
+         "type",
+         "目录名含 type/model/interface，通常是类型/数据模型层"),
+        (["page", "pages", "screen", "screens", "view", "views",
+          "route", "routes"],
+         "component",
+         "目录名含 page/screen/view，通常是页面/视图层（归入 component）"),
+        (["component", "components", "widget", "widgets", "ui"],
+         "component",
+         "目录名含 component/widget/ui，通常是组件层"),
+        (["util", "utils", "helper", "helpers", "lib", "libs",
+          "tool", "tools", "common"],
+         None,
+         "目录名含 util/helper/lib，通常是工具库，建议 ignore 或新建 layer"),
+        (["asset", "assets", "static", "public", "image", "images",
+          "icon", "icons", "font", "fonts", "style", "styles", "css",
+          "less", "sass", "media"],
+         None,
+         "目录名含 asset/static/style 等，通常是资源目录，建议 ignore"),
+        (["config", "configs", "constant", "constants", "const",
+          "setting", "settings", "env"],
+         None,
+         "目录名含 config/constant/setting，通常是配置目录，建议 ignore 或新建 layer"),
+        (["store", "stores", "state", "states", "redux", "vuex",
+          "mobx", "jotai", "zustand", "recoil"],
+         None,
+         "目录名含 store/state，通常是状态管理层，建议新建 layer"),
+        (["mock", "mocks", "fixture", "fixtures", "test", "tests",
+          "__tests__", "spec"],
+         None,
+         "目录名含 mock/test/spec，通常是测试辅助，建议 ignore"),
+    ]
+
+    @classmethod
+    def _suggest_layer_for_dir(cls, dir_name: str, sample_names: List[str]) -> Tuple[Optional[str], str]:
+        """根据目录名（+ 文件名样本）推测最可能的归属和理由。
+
+        返回 (suggested_key, reason)：
+        - suggested_key: layer 名（如 'service'），或 'ignore'，或 None（无把握）
+        - reason: 给用户看的理由
+        """
+        name_lower = dir_name.lower().strip("_-")
+
+        # 1. 目录名精确匹配关键词表
+        for keywords, layer, reason in cls._DIR_SUGGEST_MAP:
+            if any(kw == name_lower or kw in name_lower for kw in keywords):
+                if layer is None:
+                    # 建议 ignore 或新建 layer 的资源/工具类目录
+                    if any(kw in name_lower for kw in
+                           ["asset", "static", "public", "image", "icon",
+                            "font", "style", "css", "less", "sass", "media"]):
+                        return "ignore", reason
+                    return None, reason   # 建议新建 layer，不锁定
+                return layer, reason
+
+        # 2. 文件名样本启发：超过 60% 以 use 开头 → 推测是 hook
+        if sample_names:
+            use_count = sum(
+                1 for s in sample_names
+                if re.match(r"^use[A-Z]", s)
+            )
+            if use_count / len(sample_names) >= 0.6:
+                return "hook", f"样本文件名 {use_count}/{len(sample_names)} 以 use 开头，推测是 Hook 层"
+
+        # 3. 文件名样本全是 PascalCase → 推测是 component
+        if sample_names:
+            pascal_count = sum(
+                1 for s in sample_names
+                if re.match(r"^[A-Z][A-Za-z0-9]*$", s)
+            )
+            if pascal_count / len(sample_names) >= 0.7:
+                return "component", f"样本文件名 {pascal_count}/{len(sample_names)} 为 PascalCase，推测是 Component 层"
+
+        return None, "目录内容特征不明显，需要人工判断"
+
     def _resolve_unknown_dirs(self, plan: ProposedPlan) -> None:
-        """src/ 下不在常规词表里的目录 → 抛 conflict（Q3=A）。
+        """src/ 下不在常规词表里的目录 → 抛 conflict，先给推测建议再列选项。
 
         C2: choices 末尾加 "new-layer:<dir_name>" 让用户新建自定义层。
         C3: 0 个 ts/tsx 的目录 default_choice 改为 "ignore"。
+        C4: 先推测归属，在 title/detail 里展示建议理由，帮助用户快速决策。
         """
         for L in self.report.layers:
             if L.name != "unknown":
                 continue
             dir_name = L.path.rstrip("/").rsplit("/", 1)[-1]
             cid = f"unknown-dir:{dir_name}"
+
+            # C4: 推测建议
+            suggested_key, reason = self._suggest_layer_for_dir(
+                dir_name, L.sample_names
+            )
+
             choices = [
                 ConflictChoice(
                     key=name,
@@ -321,21 +415,38 @@ class InitResolver:
             choices.append(ConflictChoice(
                 key="ignore",
                 label="忽略（加进 scanner.exclude_dirs）",
-                detail=f"扫描器会跳过 {L.path}",
+                detail=f"扫描器会跳过 {L.path}，不参与架构校验和扫描",
             ))
             choices.append(ConflictChoice(
                 key="skip",
-                label="先放着不处理",
+                label="先放着不处理 ★",
                 detail="这次 init 不动这个目录，后续手动改 rules.yaml",
             ))
+
             # C3: 0 ts/tsx → 最安全是 ignore；有文件 → skip（保持现状）
-            default = "ignore" if L.file_count == 0 else "skip"
+            if L.file_count == 0:
+                default = "ignore"
+            elif suggested_key == "ignore":
+                default = "ignore"
+            else:
+                default = "skip"
+
+            # C4: 推测建议展示在 detail 头部
+            suggest_hint = ""
+            if suggested_key and suggested_key != "ignore":
+                suggest_hint = f"💡 建议映射为 {suggested_key}（{reason}）\n"
+            elif suggested_key == "ignore":
+                suggest_hint = f"💡 建议 ignore（{reason}）\n"
+            else:
+                suggest_hint = f"💡 {reason}\n"
+
             plan.conflicts.append(Conflict(
                 id=cid,
                 category="unknown-dir",
                 title=f"src/ 下发现未识别目录：{L.path}（{L.file_count} 个 ts/tsx 文件）",
                 detail=(
                     f"示例文件：{', '.join(L.sample_names[:5]) or '（空）'}\n"
+                    f"{suggest_hint}"
                     "请选择如何处理"
                 ),
                 choices=choices,

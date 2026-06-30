@@ -212,6 +212,39 @@ class UnknownDirConflictTests(unittest.TestCase):
         self.assertIn("ignore", keys)
         self.assertIn("skip", keys)
         self.assertIn("hook", keys)
+        self.assertIn("建议", c.detail)
+        self.assertIn("util/helper/lib", c.detail)
+
+    def test_unknown_dir_suggests_ignore_for_asset_like_dir(self) -> None:
+        report = _make_report(layers=[
+            LayerFinding(name="unknown", path="src/assets/", file_count=8,
+                         sample_names=["logo", "empty", "icon"]),
+        ])
+        plan = resolve_init(_default_rules(), report)
+        c = next(c for c in plan.conflicts if c.id == "unknown-dir:assets")
+        self.assertEqual(c.default_choice, "ignore")
+        self.assertIn("建议 ignore", c.detail)
+        self.assertIn("资源目录", c.detail)
+
+    def test_unknown_dir_suggests_component_from_pascal_samples(self) -> None:
+        report = _make_report(layers=[
+            LayerFinding(name="unknown", path="src/widgets/", file_count=3,
+                         sample_names=["UserCard", "TeamPanel", "BudgetTable"]),
+        ])
+        plan = resolve_init(_default_rules(), report)
+        c = next(c for c in plan.conflicts if c.id == "unknown-dir:widgets")
+        self.assertEqual(c.default_choice, "skip")
+        self.assertIn("建议映射为 component", c.detail)
+
+    def test_unknown_dir_suggests_hook_from_use_samples(self) -> None:
+        report = _make_report(layers=[
+            LayerFinding(name="unknown", path="src/custom/", file_count=3,
+                         sample_names=["useFoo", "useBar", "useBaz"]),
+        ])
+        plan = resolve_init(_default_rules(), report)
+        c = next(c for c in plan.conflicts if c.id == "unknown-dir:custom")
+        self.assertEqual(c.default_choice, "skip")
+        self.assertIn("建议映射为 hook", c.detail)
 
     def test_apply_ignore_adds_to_exclude_dirs(self) -> None:
         resolver = InitResolver(_default_rules(), self.report)
