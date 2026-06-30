@@ -289,9 +289,7 @@ class InitResolver:
                 f"layer '{name}' 路径采用探测结果：{probed_paths}（默认是 {default_paths}）",
             )
 
-    # ---- unknown 目录 ----------------------------------------------------
-
-    # ---- unknown 目录推测 ------------------------------------------------
+    # ---- unknown 目录 & 推测逻辑 -----------------------------------------
 
     # 目录名关键词 → 推测 layer，按精确度从高到低排列
     _DIR_SUGGEST_MAP: List[Tuple[List[str], str, str]] = [
@@ -419,7 +417,7 @@ class InitResolver:
             ))
             choices.append(ConflictChoice(
                 key="skip",
-                label="先放着不处理 ★",
+                label="先放着不处理",
                 detail="这次 init 不动这个目录，后续手动改 rules.yaml",
             ))
 
