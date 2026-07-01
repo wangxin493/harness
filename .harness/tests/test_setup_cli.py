@@ -176,17 +176,30 @@ class TestSetupFailFast(_SetupCliBase):
 
 class TestSetupReentrancy(_SetupCliBase):
 
-    def test_rerun_setup_does_not_block(self) -> None:
-        """rules.yaml 已存在时,非交互模式应直接覆盖,不卡在 confirm prompt."""
+    def test_rerun_setup_requires_force(self) -> None:
+        """rules.yaml 已存在时,非交互模式默认拒绝覆盖，避免误删人工配置。"""
         # 第一次 setup
         first = self.runner.invoke(
             cli_module.cli, ["setup", "--agent", "claude"],
         )
         self.assertEqual(first.exit_code, 0, first.output)
 
-        # 第二次 setup（rules.yaml 已存在）
+        # 第二次 setup（rules.yaml 已存在），不加 --force 应阻止覆盖
         second = self.runner.invoke(
             cli_module.cli, ["setup", "--agent", "claude"],
+        )
+        self.assertEqual(second.exit_code, 1, second.output)
+        self.assertIn("需加 --force", second.output)
+
+    def test_rerun_setup_with_force_overwrites(self) -> None:
+        """rules.yaml 已存在时,显式 --force 才允许非交互覆盖。"""
+        first = self.runner.invoke(
+            cli_module.cli, ["setup", "--agent", "claude"],
+        )
+        self.assertEqual(first.exit_code, 0, first.output)
+
+        second = self.runner.invoke(
+            cli_module.cli, ["setup", "--agent", "claude", "--force"],
         )
         self.assertEqual(second.exit_code, 0, second.output)
         self.assertIn("Harness 接入完成", second.output)

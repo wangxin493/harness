@@ -611,6 +611,75 @@ class TestImportAlias(unittest.TestCase):
         self.assertEqual(len(arch), 1)
         self.assertEqual(arch[0].rule_id, "arch-service-import")
 
+    def test_at_slash_uses_source_root_fallback(self):
+        """未显式配置 alias 时，@/ 应映射到 scanner.source_root 而不是硬编码 src。"""
+        rules = textwrap.dedent("""\
+        architecture:
+          layers:
+            - name: service
+              paths: ["src/frontend/service/"]
+              can_import: ["type"]
+            - name: hook
+              paths: ["src/frontend/hooks/"]
+              can_import: ["type"]
+        imports:
+          forbidden_imports: []
+        scanner:
+          source_root: src/frontend
+        checks:
+          hook_call_check:
+            enabled: false
+          name_similarity:
+            enabled: false
+          naming:
+            enabled: false
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/frontend/service/itemService.ts",
+            "import { useFoo } from '@/hooks/useFoo';\n"
+            "export const x = useFoo;\n",
+        )
+        issues = self.fx.validator().validate_file("src/frontend/service/itemService.ts")
+        arch = [i for i in issues if i.category == "architecture"]
+        self.assertEqual(len(arch), 1)
+        self.assertEqual(arch[0].rule_id, "arch-service-import")
+
+    def test_alias_target_list_format_supported(self):
+        """兼容 tsconfig paths 常见的 list target 格式。"""
+        rules = textwrap.dedent("""\
+        architecture:
+          layers:
+            - name: service
+              paths: ["src/api/"]
+              can_import: ["type"]
+            - name: hook
+              paths: ["src/hooks/"]
+              can_import: ["type"]
+        imports:
+          forbidden_imports: []
+        scanner:
+          import_aliases:
+            "@/": ["src/*"]
+        checks:
+          hook_call_check:
+            enabled: false
+          name_similarity:
+            enabled: false
+          naming:
+            enabled: false
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/api/itemService.ts",
+            "import { useFoo } from '@/hooks/useFoo';\n"
+            "export const x = useFoo;\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/itemService.ts")
+        arch = [i for i in issues if i.category == "architecture"]
+        self.assertEqual(len(arch), 1)
+        self.assertEqual(arch[0].rule_id, "arch-service-import")
+
 
 # ============================================================================
 # P1: naming-violation 运行时检查

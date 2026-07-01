@@ -236,5 +236,59 @@ class TestInitOverwriteConfirm(_InitCliBase):
                       rules_path.read_text(encoding="utf-8"))
 
 
+class TestInitWithRules(_InitCliBase):
+
+    def _write_draft_rules(self, body: str) -> Path:
+        draft = self.fx.root / "draft-rules.yaml"
+        draft.write_text(body, encoding="utf-8")
+        return draft
+
+    def test_rules_file_writes_rules_and_mode(self) -> None:
+        draft = self._write_draft_rules("""
+architecture:
+  layers:
+    - name: component
+      paths: ["src/components/"]
+      can_import: []
+scanner:
+  source_root: src
+naming: {}
+""")
+        result = self.runner.invoke(
+            cli_module.cli, ["init", "--rules", str(draft)],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        rules_path = self.fx.root / ".harness" / "rules.yaml"
+        mode_path = self.fx.root / ".harness" / "mode-config.json"
+        self.assertTrue(rules_path.exists())
+        self.assertTrue(mode_path.exists())
+        self.assertIn("Agent rules 已写入", result.output)
+        import yaml
+        data = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["scanner"]["source_root"], "src")
+        self.assertEqual(data["architecture"]["layers"][0]["name"], "component")
+
+    def test_rules_file_rejects_non_mapping_yaml(self) -> None:
+        draft = self._write_draft_rules("- not\n- a\n- mapping\n")
+        result = self.runner.invoke(
+            cli_module.cli, ["init", "--rules", str(draft)],
+        )
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("顶层必须是 mapping", result.output)
+        self.assertFalse((self.fx.root / ".harness" / "rules.yaml").exists())
+
+    def test_rules_file_overwrite_declined_preserves_existing(self) -> None:
+        (self.fx.root / ".harness").mkdir(parents=True, exist_ok=True)
+        rules_path = self.fx.root / ".harness" / "rules.yaml"
+        rules_path.write_text("# placeholder\nfoo: bar\n", encoding="utf-8")
+        draft = self._write_draft_rules("architecture: {}\n")
+        result = self.runner.invoke(
+            cli_module.cli, ["init", "--rules", str(draft)], input="\n",
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("已取消", result.output)
+        self.assertIn("foo: bar", rules_path.read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

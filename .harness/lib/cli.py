@@ -33,7 +33,7 @@ from lib.global_check import GlobalChecker  # noqa: E402
 from lib.init_resolver import InitResolver  # noqa: E402
 from lib.installer import get_installer  # noqa: E402
 from lib.mode_manager import GovernanceMode, ModeManager, ValidationContext  # noqa: E402
-from lib.probe import probe_project  # noqa: E402
+from lib.probe import probe_project, probe_report_to_dict  # noqa: E402
 from lib.scanner import IncrementalScanner  # noqa: E402
 from lib.template import (  # noqa: E402
     TemplateError,
@@ -67,6 +67,34 @@ def _build_mode_manager(project_dir: Path) -> ModeManager:
                       prog_name="harness")
 def cli() -> None:
     """Harness 2.0 — 代码治理框架"""
+
+
+# -- probe -----------------------------------------------------------------
+
+
+@cli.command("probe")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出项目 facts")
+def probe_cmd(as_json: bool) -> None:
+    """只读探测项目 facts，供 Agent 起草 rules.yaml 使用。"""
+    project_dir = _resolve_project_dir()
+    report = probe_project(project_dir)
+    data = probe_report_to_dict(report)
+    if as_json:
+        click.echo(json.dumps(data, ensure_ascii=False, indent=2))
+        return
+
+    click.echo(f"📂 项目: {project_dir}")
+    click.echo(f"   TypeScript: {'yes' if report.is_typescript else 'no'}")
+    click.echo(f"   tsconfig:   {'yes' if report.has_tsconfig else 'no'}")
+    click.echo(f"   frameworks: {', '.join(report.frameworks) or '-'}")
+    click.echo(f"   aliases:    {len(report.aliases)}")
+    click.echo(f"   layers:     {len(report.layers)}")
+    click.echo(f"   naming:     {len(report.naming)}")
+    if report.notes:
+        click.echo("   notes:")
+        for note in report.notes:
+            click.echo(f"     - {note}")
+    click.echo("\n下一步：让 Agent 读取 `harness probe --json`，起草 rules.yaml 后运行 `harness init --rules <file>`。")
 
 
 # -- scan ------------------------------------------------------------------
@@ -184,12 +212,23 @@ def validate_cmd(file_path: str, as_json: bool) -> None:
     project_dir = _resolve_project_dir()
     mode_manager = _build_mode_manager(project_dir)
 
-    # OFF 模式：直接放行（hook 也会先于此短路，这里再保一层）
+    # OFF 模式：提示用户并退出（C10: 不再静默返回空，避免用户误判）
     if not mode_manager.should_validate():
         if as_json:
-            click.echo(json.dumps([], ensure_ascii=False))
+            click.echo(json.dumps(
+                [],
+                ensure_ascii=False,
+            ))
+            # 把 off 状态放到 stderr，不污染 --json 的 stdout 管道
+            click.echo(
+                json.dumps({"warning": "mode=off，所有规则已禁用；以上空列表不代表代码无问题"}),
+                err=True,
+            )
         else:
-            click.echo(f"⏸️  治理模式为 off，跳过验证: {file_path}")
+            click.echo(
+                f"⚠️  mode=off：所有规则已禁用，跳过验证 {file_path}\n"
+                "   结果为空不代表代码无问题；如需验证请先切换模式：harness mode strict"
+            )
         return
 
     validator = CodeValidator(project_dir=project_dir)
@@ -224,6 +263,124 @@ def validate_cmd(file_path: str, as_json: bool) -> None:
 
     # 非零退出码：根据 mode 决定（relaxed 仅 error 拦截，strict 拦截一切非 info）
     if any(mode_manager.should_block(i.severity) for i in issues):
+        sys.exit(2)
+
+
+@cli.command("validate-all")
+@click.argument("path", type=str, default="", required=False)
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 输出全量 issue 列表（不截断）")
+def validate_all_cmd(path: str, as_json: bool) -> None:
+    """验证全项目（或指定子目录）所有已扫描文件。
+
+    C9: 遍历 .harness/context/project-context.json 里的文件列表，
+    逐文件调用 validate，聚合输出。
+
+    可选参数 PATH：仅验证该路径前缀下的文件（POSIX 相对路径，例 src/frontend/service）。
+
+    退出码：
+      0  → 所有文件通过
+      2  → 有问题（与 validate 单文件保持一致）
+    """
+    project_dir = _resolve_project_dir()
+    mode_manager = _build_mode_manager(project_dir)
+
+    if not mode_manager.should_validate():
+        if as_json:
+            click.echo(json.dumps([], ensure_ascii=False))
+            click.echo(
+                json.dumps({"warning": "mode=off，所有规则已禁用；结果为空不代表代码无问题"}),
+                err=True,
+            )
+        else:
+            click.echo(
+                "⚠️  mode=off：所有规则已禁用，跳过验证\n"
+                "   如需验证请先切换模式：harness mode strict"
+            )
+        return
+
+    ctx_file = project_dir / ".harness" / "context" / "project-context.json"
+    if not ctx_file.exists():
+        if as_json:
+            click.echo(json.dumps([], ensure_ascii=False))
+        else:
+            click.echo("⚠️  尚未扫描，请先运行 harness scan", err=True)
+        sys.exit(3)
+
+    try:
+        ctx = json.loads(ctx_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        click.echo(f"❌ 读取 project-context.json 失败: {exc}", err=True)
+        sys.exit(3)
+
+    normalized_path = path.replace("\\", "/").strip()
+    if normalized_path in (".", "./"):
+        normalized_path = ""
+    normalized_path = normalized_path.strip("/")
+    path_filter = normalized_path + "/" if normalized_path else ""
+    files = [
+        f["file_path"]
+        for f in (ctx.get("files") or [])
+        if f.get("file_path") and (
+            not path_filter or f["file_path"].startswith(path_filter)
+        )
+    ]
+
+    if not files:
+        if as_json:
+            click.echo(json.dumps([], ensure_ascii=False))
+        else:
+            msg = f"no files under '{path}'" if path else "no files in context"
+            click.echo(f"ℹ️  {msg}，无需验证")
+        return
+
+    validator = CodeValidator(project_dir=project_dir)
+    ctx_filter = ValidationContext(mode_manager)
+    all_issues: list = []
+    has_block = False
+
+    for fp in files:
+        raw = validator.validate_file(fp)
+        filtered = ctx_filter.filter_issues(raw)
+        if filtered:
+            for i in filtered:
+                all_issues.append(_issue_to_dict(i))
+            if any(mode_manager.should_block(i.severity) for i in filtered):
+                has_block = True
+
+    if as_json:
+        click.echo(json.dumps(all_issues, ensure_ascii=False, indent=2))
+    else:
+        total = len(all_issues)
+        n_files = len(files)
+        if total == 0:
+            click.echo(f"✅ 全部 {n_files} 个文件验证通过 (mode={mode_manager.current_mode.value})")
+        else:
+            by_sev: Dict[str, int] = {}
+            for i in all_issues:
+                by_sev[i["severity"]] = by_sev.get(i["severity"], 0) + 1
+            sev_str = "  ".join(f"{s.upper()}={n}" for s, n in sorted(by_sev.items()))
+            click.echo(
+                f"❌ {n_files} 个文件，发现 {total} 个问题 "
+                f"({sev_str})  (mode={mode_manager.current_mode.value})"
+            )
+            # 人读输出固定展示前 50 条；完整结果用 --json
+            _HUMAN_DISPLAY_LIMIT = 50
+            shown = all_issues[:_HUMAN_DISPLAY_LIMIT]
+            for issue in shown:
+                f = issue["file"]
+                line = f":{issue['line']}" if issue.get("line") else ""
+                click.echo(
+                    f"   [{issue['severity'].upper()}] {f}{line}  {issue['message']}"
+                )
+                if issue.get("suggestion"):
+                    click.echo(f"      建议: {issue['suggestion']}")
+            if total > _HUMAN_DISPLAY_LIMIT:
+                click.echo(
+                    f"   … 还有 {total - _HUMAN_DISPLAY_LIMIT} 条已截断；"
+                    "完整列表: harness validate-all --json"
+                )
+
+    if has_block:
         sys.exit(2)
 
 
@@ -267,7 +424,7 @@ def _file_should_validate(project_dir: Path, file_path: str) -> bool:
     scanner_cfg = (rules.get("scanner") or {}) if isinstance(rules, dict) else {}
     source_root = (scanner_cfg.get("source_root") or "src").rstrip("/")
     include_exts = tuple(scanner_cfg.get("include_extensions")
-                          or [".ts", ".tsx", ".d.ts"])
+                          or [".ts", ".tsx", ".d.ts", ".js", ".jsx"])
     exclude_globs = list(scanner_cfg.get("exclude_globs") or [])
     exclude_dirs = set(scanner_cfg.get("exclude_dirs") or [])
 
@@ -445,6 +602,7 @@ def new_cmd(kind: str, name: str, force: bool,
         }, ensure_ascii=False, indent=2))
         if not result.written:
             sys.exit(1)
+        _generate_after_new(project_dir)
         return
 
     if not result.written:
@@ -455,6 +613,17 @@ def new_cmd(kind: str, name: str, force: bool,
     for w in result.warnings:
         click.echo(f"   ⚠️  {w}")
     click.echo("   下一步:打开文件填写 TODO;保存时 PostToolUse hook 会校验。")
+
+    # 刷新 generated/claude.md，与 lesson add / mode 切换行为对齐
+    _generate_after_new(project_dir)
+
+
+def _generate_after_new(project_dir: Path) -> None:
+    harness_dir = project_dir / ".harness"
+    try:
+        Generator(project_dir, harness_dir).generate_all()
+    except Exception:
+        pass  # generate 失败不影响 new 的成功状态
 
 
 # -- check (全项目维度) -----------------------------------------------------
@@ -1202,8 +1371,22 @@ def _prompt_for_choice(conflict) -> str:
         click.echo(f"   ⚠️ 请输入 1-{len(keys)} 之间的数字")
 
 
+def _load_agent_rules(path: Path) -> dict:
+    """读取 Agent 起草的 rules.yaml，做最小防线后返回 dict。"""
+    import yaml
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        click.echo(f"❌ 无法解析 rules.yaml：{exc}", err=True)
+        sys.exit(2)
+    if not isinstance(data, dict):
+        click.echo("❌ rules.yaml 顶层必须是 mapping（dict），请检查文件内容。", err=True)
+        sys.exit(2)
+    return data
+
+
 def _write_init_outputs(
-    project_dir: Path, final_rules: dict, plan,
+    project_dir: Path, final_rules: dict, plan=None,
 ) -> List[Path]:
     """落盘 rules.yaml + 初始化必要的目录。返回写了/动了的文件列表。"""
     import yaml
@@ -1240,15 +1423,49 @@ def _write_init_outputs(
 @click.option("--yes", "-y", "auto_yes", is_flag=True,
               help="所有 conflict 走 default_choice，不交互")
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 输出 plan")
-def init_cmd(dry_run: bool, auto_yes: bool, as_json: bool) -> None:
+@click.option("--rules", "rules_file", type=click.Path(exists=True, dir_okay=False),
+              help="使用 Agent 起草的 rules.yaml 写盘初始化")
+def init_cmd(dry_run: bool, auto_yes: bool, as_json: bool,
+             rules_file: Optional[str]) -> None:
     """探测项目现状并生成 .harness/rules.yaml。
 
     三段式:
       1) probe   — 只读扫一遍项目根（tsconfig / package.json / src/）
       2) resolve — 对照出厂默认 rules，自动采纳能采纳的、抛 conflict
       3) apply   — 交互回答（或 --yes 走默认）后写盘
+
+    使用 --rules <file> 跳过 probe/resolve/apply，直接把 Agent 起草的规则写盘。
     """
     project_dir = _resolve_project_dir()
+    if rules_file:
+        if dry_run:
+            click.echo("❌ --rules 不能与 --dry-run 同时使用", err=True)
+            sys.exit(2)
+        if as_json:
+            click.echo(json.dumps({"error": "--rules 不能与 --json 同时使用"}, ensure_ascii=False, indent=2))
+            sys.exit(2)
+        final_rules = _load_agent_rules(Path(rules_file))
+        rules_path = project_dir / ".harness" / "rules.yaml"
+        if rules_path.exists():
+            if not click.confirm(
+                f"⚠️ {rules_path.relative_to(project_dir)} 已存在，覆盖？",
+                default=False,
+            ):
+                click.echo("已取消，未写盘。")
+                return
+        written = _write_init_outputs(project_dir, final_rules)
+        click.echo("\n✅ Agent rules 已写入。落盘:")
+        for p in written:
+            try:
+                rel = p.relative_to(project_dir)
+            except ValueError:
+                rel = p
+            click.echo(f"   • {rel}")
+        click.echo("\n下一步：")
+        click.echo("   1) `harness scan` 生成 .harness/generated/claude.md")
+        click.echo("   2) `harness install --agent <claude|ducc|baidu-cc>` 接通 hook")
+        return
+
     report = probe_project(project_dir)
     default_rules = _load_default_rules_for_init()
     resolver = InitResolver(default_rules, report)
@@ -1322,9 +1539,11 @@ def init_cmd(dry_run: bool, auto_yes: bool, as_json: bool) -> None:
               help="目标 Agent；必填，没有默认值（不同 Agent 安装位置不同）")
 @click.option("--interactive", is_flag=True,
               help="init 阶段走交互模式（默认 --yes 不交互）")
+@click.option("--force", is_flag=True,
+              help="rules.yaml 已存在时强制覆盖（非交互模式专用）")
 @click.option("--json", "as_json", is_flag=True,
               help="以 JSON 输出每阶段结果（聚合）")
-def setup_cmd(agent: str, interactive: bool, as_json: bool) -> None:
+def setup_cmd(agent: str, interactive: bool, force: bool, as_json: bool) -> None:
     """一条命令搞定接入：init + install + scan（fail-fast，任一阶段失败即退出）。
 
     等价于：
@@ -1332,8 +1551,8 @@ def setup_cmd(agent: str, interactive: bool, as_json: bool) -> None:
       harness install --agent <agent>
       harness scan
 
-    适合"刚 cp 完 .harness/，立即就要能用"的场景；不想交互就这条命令一把梭。
-    init 已经探测过的项目重跑也安全（rules.yaml 已存在会确认覆盖）。
+    首次接入使用。已接入项目请用 `harness scan` 刷新，不需要重跑 setup。
+    非交互模式下若 rules.yaml 已存在，需加 --force 才会覆盖。
     """
     project_dir = _resolve_project_dir()
     stages: List[Dict[str, Any]] = []
@@ -1361,10 +1580,17 @@ def setup_cmd(agent: str, interactive: bool, as_json: bool) -> None:
         # 非 interactive：answers 留空，apply 会回落 default_choice
 
         rules_path = project_dir / ".harness" / "rules.yaml"
-        if rules_path.exists() and not as_json and not interactive:
-            # 一键模式默认覆盖（用户跑 setup 就是接受所有默认）；
-            # 但保留交互模式的二次确认体验
-            pass
+        if rules_path.exists() and not interactive:
+            if not force:
+                msg = (
+                    "rules.yaml 已存在。非交互模式下需加 --force 才会覆盖。\n"
+                    "已有接入项目请用 `harness scan` 刷新，不需要重跑 setup。"
+                )
+                if as_json:
+                    click.echo(json.dumps({"stage": "init", "error": msg}, ensure_ascii=False, indent=2))
+                else:
+                    click.echo(f"[error] {msg}", err=True)
+                sys.exit(1)
         elif rules_path.exists() and interactive:
             if not click.confirm(
                 f"⚠️ {rules_path.relative_to(project_dir)} 已存在，覆盖？",

@@ -376,11 +376,11 @@ class InitResolver:
         return None, "目录内容特征不明显，需要人工判断"
 
     def _resolve_unknown_dirs(self, plan: ProposedPlan) -> None:
-        """src/ 下不在常规词表里的目录 → 抛 conflict，先给推测建议再列选项。
+        """src/ 下不在常规词表里的目录 → 抛 conflict，展示事实与参考信息。
 
         C2: choices 末尾加 "new-layer:<dir_name>" 让用户新建自定义层。
         C3: 0 个 ts/tsx 的目录 default_choice 改为 "ignore"。
-        C4: 先推测归属，在 title/detail 里展示建议理由，帮助用户快速决策。
+        C4: 推测信息只作为 detail 参考，不驱动 default_choice。
         """
         for L in self.report.layers:
             if L.name != "unknown":
@@ -421,10 +421,12 @@ class InitResolver:
                 detail="这次 init 不动这个目录，后续手动改 rules.yaml",
             ))
 
-            # C3: 0 ts/tsx → 最安全是 ignore；有文件 → skip（保持现状）
+            # C3: 0 ts/tsx → 最安全是 ignore；资源类目录（无代码语义）→ ignore；
+            # 其他有文件目录 → skip（工具不替用户做语义判断）
             if L.file_count == 0:
                 default = "ignore"
             elif suggested_key == "ignore":
+                # 资源/静态目录（asset/style/css 等）是机械判断，不属于语义推断
                 default = "ignore"
             else:
                 default = "skip"

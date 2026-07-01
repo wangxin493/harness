@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -83,6 +83,11 @@ class ProbeReport:
     notes: List[str] = field(default_factory=list)
 
 
+def probe_report_to_dict(report: ProbeReport) -> Dict:
+    """把 ProbeReport 转成 CLI JSON 友好的 dict。"""
+    return asdict(report)
+
+
 # ---------------------------------------------------------------------------
 # 探测器
 # ---------------------------------------------------------------------------
@@ -105,14 +110,15 @@ class ProjectProbe:
         "composables": "hook",
         "api": "service",
         "apis": "service",
+        "service": "service",
         "services": "service",
         "types": "type",
         "models": "type",
         "interfaces": "type",
     }
 
-    # 探测命名时采样的最多文件数
-    _NAMING_SAMPLE_LIMIT = 60
+    # init 探测阶段按运行时代码文件统计；.d.ts 不参与命名采样。
+    _SOURCE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx")
 
     def __init__(self, project_dir: Path) -> None:
         self.project_dir = Path(project_dir).resolve()
@@ -241,33 +247,90 @@ class ProjectProbe:
         src = self.project_dir / "src"
         if not src.is_dir():
             return
-        for child in sorted(src.iterdir()):
+
+        # C1: 检测双栈布局 —— src/ 下若有且仅有一个子目录含有源文件
+        # (其余子目录全为 0)，则该子目录更可能是真正的 source_root，
+        # 记录为 source_root_hint 供 resolver 询问用户。
+        first_level = [c for c in sorted(src.iterdir()) if c.is_dir()]
+        non_empty = []
+        for child in first_level:
+            cnt = self._count_source_files(child)
+            if cnt > 0:
+                non_empty.append((child, cnt))
+        # C1: 双栈检测 —— src/ 下有 2+ 个子目录且源文件只集中在其中 1 个
+        # 仅在多目录情况下触发，避免单目录 scaffold 误下钻。
+        scan_root = src
+        path_prefix = "src"
+        if len(first_level) >= 2 and len(non_empty) == 1:
+            scan_root = non_empty[0][0]
+            path_prefix = f"src/{scan_root.name}"
+            report.notes.append(f"dual-stack-hint:{path_prefix}")
+        elif len(first_level) >= 2:
+            preferred_frontend = self._preferred_frontend_root(first_level)
+            if preferred_frontend is not None:
+                scan_root = preferred_frontend
+                path_prefix = f"src/{scan_root.name}"
+                report.notes.append(f"dual-stack-hint:{path_prefix}")
+
+        # 按推断出的 source_root 扫一级子目录。
+        for child in sorted(scan_root.iterdir()):
             if not child.is_dir():
                 continue
             layer = self._DIR_LAYER_HINTS.get(child.name.lower())
             if not layer:
                 # 不在常规命名表里 → 标 unknown，让 resolver 询问用户
                 layer = "unknown"
-            files = self._collect_ts_files(child, limit=self._NAMING_SAMPLE_LIMIT)
+            # file_count 用真实总数；sample 只采前 N 个供命名风格统计
+            real_count = self._count_source_files(child)
+            files = self._collect_source_files(child, limit=self._NAMING_SAMPLE_LIMIT)
             samples = [Path(f).stem for f in files]
             report.layers.append(LayerFinding(
                 name=layer,
-                path=f"src/{child.name}/",
-                file_count=len(files),
+                path=f"{path_prefix}/{child.name}/",
+                file_count=real_count,
                 sample_names=samples[:10],
             ))
 
-    @staticmethod
-    def _collect_ts_files(folder: Path, limit: int) -> List[str]:
+    # 探测命名时采样的最多文件数
+    _NAMING_SAMPLE_LIMIT = 60
+
+    @classmethod
+    def _preferred_frontend_root(cls, first_level: List[Path]) -> Optional[Path]:
+        by_name = {p.name.lower(): p for p in first_level}
+        frontend = by_name.get("frontend") or by_name.get("client") or by_name.get("web")
+        backend = by_name.get("backend") or by_name.get("server")
+        if frontend is None or backend is None:
+            return None
+        if cls._count_source_files(frontend) <= 0:
+            return None
+        return frontend
+
+    @classmethod
+    def _count_source_files(cls, folder: Path) -> int:
+        return sum(
+            1 for p in folder.rglob("*")
+            if p.is_file() and p.suffix in cls._SOURCE_EXTENSIONS
+        )
+
+    @classmethod
+    def _collect_source_files(cls, folder: Path, limit: int) -> List[str]:
         out: List[str] = []
         for p in folder.rglob("*"):
-            if p.is_file() and (
-                p.suffix in (".ts", ".tsx") or p.name.endswith(".d.ts")
-            ):
+            if p.is_file() and p.suffix in cls._SOURCE_EXTENSIONS:
                 out.append(p.as_posix())
                 if len(out) >= limit:
                     break
         return out
+
+    @staticmethod
+    def _count_ts_files(folder: Path) -> int:
+        """向后兼容别名 → 委托给 _count_source_files。"""
+        return ProjectProbe._count_source_files(folder)
+
+    @staticmethod
+    def _collect_ts_files(folder: Path, limit: int) -> List[str]:
+        """向后兼容别名 → 委托给 _collect_source_files。"""
+        return ProjectProbe._collect_source_files(folder, limit)
 
     # -- 命名风格统计 ------------------------------------------------------
 

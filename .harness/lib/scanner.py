@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from lib.ast_parser import ParseResult, TypeScriptParser
+from lib.rules_utils import classify_layer, normalize_layers, parse_import_aliases
 
 
 # ---------------------------------------------------------------------------
@@ -97,22 +98,15 @@ class IncrementalScanner:
 
         self.rules = rules if rules is not None else self._load_rules()
         self.scanner_cfg = self.rules.get("scanner", {}) or {}
-        self.layers = self._normalize_layers(self.rules.get("architecture", {}).get("layers", []))
+        self.layers = normalize_layers(self.rules.get("architecture", {}).get("layers", []))
 
         self.source_root = self.scanner_cfg.get("source_root", "src")
-        self.include_exts = tuple(self.scanner_cfg.get("include_extensions", [".ts", ".tsx", ".d.ts"]))
+        self.include_exts = tuple(self.scanner_cfg.get("include_extensions", [".ts", ".tsx", ".d.ts", ".js", ".jsx"]))
         self.exclude_globs = list(self.scanner_cfg.get("exclude_globs", []))
         self.exclude_dirs = set(self.scanner_cfg.get("exclude_dirs", []))
 
-        # 路径别名（默认 "@/" 映射到 source_root/）。支持配多个：
-        #   scanner:
-        #     import_alias: "@/"            # 简写
-        #     # 或
-        #     import_aliases:               # 多别名
-        #       "@/": "src/"
-        #       "~/": "src/"
-        # 顺序：先消费 import_aliases，再消费 import_alias。
-        self.import_aliases: List[Tuple[str, str]] = self._build_aliases()
+        # 路径别名（默认 "@/" 映射到 source_root/）。支持配多个。
+        self.import_aliases: List[Tuple[str, str]] = parse_import_aliases(self.scanner_cfg)
 
         # 模块解析候选扩展名（与 include_exts 区分：解析时通常需要在裸路径
         # 上拼一个具体扩展名，所以不应包含组合扩展名 .d.ts；这里允许通过
@@ -123,7 +117,7 @@ class IncrementalScanner:
         else:
             self._resolve_suffixes = tuple(
                 ext for ext in self.include_exts if "." not in ext.lstrip(".")
-            ) or (".ts", ".tsx")
+            ) or (".ts", ".tsx", ".js", ".jsx")
             # 始终保留 .d.ts 末位探测（脚本类型声明），与 TS resolver 行为对齐
             if ".d.ts" in self.include_exts and ".d.ts" not in self._resolve_suffixes:
                 self._resolve_suffixes = self._resolve_suffixes + (".d.ts",)
@@ -134,28 +128,7 @@ class IncrementalScanner:
 
         self.parser = TypeScriptParser()
 
-    def _build_aliases(self) -> List[Tuple[str, str]]:
-        """收集导入路径别名。返回 [(alias_prefix, target_prefix)]。
-
-        - target_prefix 末尾不带 "/"
-        - alias_prefix 默认补 "/"，确保不会把 "@something" 误判为别名
-        """
-        aliases: List[Tuple[str, str]] = []
-        multi = self.scanner_cfg.get("import_aliases") or {}
-        if isinstance(multi, dict):
-            for k, v in multi.items():
-                if not isinstance(k, str) or not isinstance(v, str) or not k:
-                    continue
-                aliases.append((k if k.endswith("/") else k + "/", v.rstrip("/")))
-        single = self.scanner_cfg.get("import_alias")
-        if isinstance(single, str) and single:
-            prefix = single if single.endswith("/") else single + "/"
-            target = (self.scanner_cfg.get("import_alias_target")
-                      or self.source_root or "src").rstrip("/")
-            aliases.append((prefix, target))
-        if not aliases:
-            aliases.append(("@/", (self.source_root or "src").rstrip("/")))
-        return aliases
+    # -- 别名、层规范化（已迁移到 lib/rules_utils.py）-----------------------
 
     # -- 公共入口 -----------------------------------------------------------
 
@@ -192,7 +165,7 @@ class IncrementalScanner:
                 cached = prev["record"]
                 record = FileRecord(
                     file_path=rel_path,
-                    layer=self._classify_layer(rel_path),
+                    layer=classify_layer(rel_path, self.layers),
                     sha1=sha1,
                     mtime=mtime,
                     parsed_ok=cached.get("parsed_ok", True),
@@ -261,7 +234,7 @@ class IncrementalScanner:
         mtime: float,
     ) -> FileRecord:
         """解析单文件并组装 FileRecord。"""
-        layer = self._classify_layer(rel_path)
+        layer = classify_layer(rel_path, self.layers)
 
         try:
             parse_result = self.parser.parse(abs_path)
@@ -305,27 +278,7 @@ class IncrementalScanner:
             parse_errors=parse_errors,
         )
 
-    # -- 路径 → 层级 --------------------------------------------------------
-
-    def _classify_layer(self, rel_posix: str) -> str:
-        """按 rules.yaml architecture.layers 顺序匹配；未命中 → unknown。"""
-        for layer in self.layers:
-            for prefix in layer["paths"]:
-                if rel_posix.startswith(prefix):
-                    return layer["name"]
-        return "unknown"
-
-    @staticmethod
-    def _normalize_layers(layers_cfg: List[Dict]) -> List[Dict]:
-        normalized = []
-        for layer in layers_cfg or []:
-            name = layer.get("name", "")
-            paths = layer.get("paths", []) or []
-            # 统一 POSIX 前缀
-            paths = [p.replace("\\", "/") for p in paths]
-            normalized.append({"name": name, "paths": paths,
-                                "can_import": layer.get("can_import", [])})
-        return normalized
+    # -- 路径 → 层级（已迁移到 lib/rules_utils.py::classify_layer）-------------
 
     # -- 分类入索引（component / hook / api / type）------------------------
 

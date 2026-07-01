@@ -446,7 +446,13 @@ class ClaudeAdapter(AgentAdapter):
             "（inject-lessons.sh）\n"
             "- 验证失败会以 `decision: block` 返回；按 reason 修改后再保存\n"
             "- 治理模式可通过 `harness mode <strict|relaxed|off>` 切换\n"
-            "- 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）"
+            "- 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）\n\n"
+            "## 🧭 rules.yaml 起草流程\n\n"
+            "- 新项目接入时，优先运行 `harness probe --json` 获取项目 facts\n"
+            "- Agent 根据 facts、项目上下文和用户确认，起草 `rules.yaml`\n"
+            "- 使用 `harness init --rules <file>` 写入 `.harness/rules.yaml`\n"
+            "- 写入后运行 `harness scan` 刷新 `.harness/generated/claude.md`\n"
+            "- 不确定的层归属必须询问用户，不要仅凭目录名自行决策"
         )
         return header + body + workflow + "\n"
 
@@ -879,7 +885,7 @@ class HooksConfigAdapter(AgentAdapter):
     def render_body(self, ctx: GenerateContext) -> str:
         scanner = (ctx.rules or {}).get("scanner") or {}
         source_root = scanner.get("source_root") or "src"
-        include_ext = scanner.get("include_extensions") or [".ts", ".tsx", ".d.ts"]
+        include_ext = scanner.get("include_extensions") or [".ts", ".tsx", ".d.ts", ".js", ".jsx"]
         exclude_dirs = scanner.get("exclude_dirs") or []
         # exclude_globs 不再输出:复杂 glob 交给 `harness should-validate` CLI 兜底,
         # bash glob (case 模式) 与 Python fnmatch 语义不完全一致(尤其 `**`),

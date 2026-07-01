@@ -235,6 +235,13 @@ class Doctor:
                 suggestion="补全 architecture.layers，否则架构层验证全部跳过",
             )
         layers = (data.get("architecture") or {}).get("layers") or []
+        if not layers:
+            return CheckResult(
+                name="rules.yaml",
+                severity="warning",
+                message="architecture.layers 为空（0 个架构层），架构治理未激活",
+                suggestion="在 rules.yaml 的 architecture.layers 里添加项目分层，否则所有架构校验跳过",
+            )
         return CheckResult(
             name="rules.yaml",
             severity="ok",

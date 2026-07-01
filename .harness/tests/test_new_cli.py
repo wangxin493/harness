@@ -7,6 +7,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -136,6 +137,13 @@ class TestNewCli(unittest.TestCase):
         payload = json.loads(result.output)
         self.assertTrue(payload["written"])
         self.assertEqual(payload["file"], "src/types/User.ts")
+
+    def test_json_success_triggers_generate(self):
+        with patch.object(cli_module.Generator, "generate_all") as generate_all:
+            result = self.runner.invoke(
+                cli_module.cli, ["new", "type", "User", "--json"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        generate_all.assert_called_once()
 
     def test_json_invalid_name(self):
         result = self.runner.invoke(

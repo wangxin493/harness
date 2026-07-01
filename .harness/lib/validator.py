@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from lib.ast_parser import TypeScriptParser
+from lib.rules_utils import classify_layer, normalize_layers, parse_import_aliases
 
 
 # ---------------------------------------------------------------------------
@@ -58,13 +59,13 @@ class CodeValidator:
         self.project_dir = Path(project_dir).resolve()
         self.harness_dir = (harness_dir or (self.project_dir / ".harness")).resolve()
         self.rules = rules if rules is not None else self._load_rules()
-        self.layers = self._normalize_layers(
+        self.layers = normalize_layers(
             self.rules.get("architecture", {}).get("layers", [])
         )
         self.naming_rules: Dict[str, str] = dict(self.rules.get("naming") or {})
         # 别名按前缀长度降序，确保 longer-prefix 优先匹配
-        self.import_aliases: List[Tuple[str, str]] = self._normalize_import_aliases(
-            self.rules.get("scanner", {}).get("import_aliases", [])
+        self.import_aliases: List[Tuple[str, str]] = parse_import_aliases(
+            self.rules.get("scanner", {}) or {}
         )
         self.forbidden_imports = list(
             self.rules.get("imports", {}).get("forbidden_imports", []) or []
@@ -457,14 +458,10 @@ class CodeValidator:
             return bool(sub["enabled"])
         return default
 
-    # -- 层级推断 -----------------------------------------------------------
+    # -- 层级推断（_classify_layer 已迁移到 lib/rules_utils.py）-----------
 
     def _classify_layer(self, rel_posix: str) -> str:
-        for layer in self.layers:
-            for prefix in layer["paths"]:
-                if rel_posix.startswith(prefix):
-                    return layer["name"]
-        return "unknown"
+        return classify_layer(rel_posix, self.layers)
 
     def _infer_target_layer(self, source: str) -> Optional[str]:
         """根据 import source 反查目标 layer。
@@ -493,8 +490,8 @@ class CodeValidator:
             if normalized_source.startswith(prefix):
                 suffix = normalized_source[len(prefix):].lstrip("/")
                 return target.rstrip("/") + (f"/{suffix}" if suffix else "")
-        if normalized_source.startswith("@/"):
-            return "src/" + normalized_source[2:]
+        # import_aliases 已经兜底插入 "@/" → source_root，正常不会走到这里。
+        # 若确实未命中（无任何别名配置且关闭了兜底），直接返回 None。
         return None
 
     def _allowed_imports_for(self, layer_name: str) -> List[str]:
@@ -537,31 +534,6 @@ class CodeValidator:
         if not rules_file.exists():
             return {}
         return yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
-
-    @staticmethod
-    def _normalize_layers(layers_cfg: List[Dict]) -> List[Dict]:
-        normalized = []
-        for layer in layers_cfg or []:
-            normalized.append({
-                "name": layer.get("name", ""),
-                "paths": [p.replace("\\", "/") for p in (layer.get("paths") or [])],
-                "can_import": layer.get("can_import") or [],
-            })
-        return normalized
-
-    @staticmethod
-    def _normalize_import_aliases(aliases_cfg: List[Dict]) -> List[Tuple[str, str]]:
-        aliases: List[Tuple[str, str]] = []
-        for alias in aliases_cfg or []:
-            if not isinstance(alias, dict):
-                continue
-            prefix = (alias.get("prefix") or "").replace("\\", "/")
-            target = (alias.get("target") or "").replace("\\", "/")
-            if not prefix or not target:
-                continue
-            aliases.append((prefix.rstrip("/") + "/", target.rstrip("/") + "/"))
-        aliases.sort(key=lambda item: len(item[0]), reverse=True)
-        return aliases
 
 
 # ---------------------------------------------------------------------------
