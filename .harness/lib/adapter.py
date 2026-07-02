@@ -123,6 +123,34 @@ def _render_architecture_bullets(rules: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_sub_layer_convention(rules: Dict[str, Any]) -> str:
+    """渲染 architecture.sub_layer_convention 表格。
+
+    有配置时返回完整的 markdown 小节；无配置时返回空字符串（调用方不渲染整节）。
+
+    规则摘要也写进文档，避免 Agent 误以为只有 paths 前缀匹配，转而错误降低
+    治理模式来绕过拦截。
+    """
+    convention = ((rules.get("architecture") or {}).get("sub_layer_convention") or {})
+    if not isinstance(convention, dict) or not convention:
+        return ""
+    lines = [
+        "### 局部子目录归层（sub_layer_convention）",
+        "",
+        "> **优先级高于 paths 前缀匹配。**"
+        " 文件归层时先在路径各部分里查下表目录名（从深到浅），命中即用；"
+        "未命中才走 `architecture.layers[].paths` 前缀。",
+        "> 示例：`src/frontend/module/**/components/*.tsx` 命中 `components` → 归为"
+        " `component` 层，**不**受 `src/frontend/module/` 前缀影响。",
+        "",
+        "| 目录名 | 归属层 |",
+        "|--------|--------|",
+    ]
+    for dir_name, layer_name in convention.items():
+        lines.append(f"| `{dir_name}` | {layer_name} |")
+    return "\n".join(lines)
+
+
 def _render_imports(rules: Dict[str, Any]) -> str:
     imp = rules.get("imports") or {}
     allowed = imp.get("allowed_prefixes") or []
@@ -367,16 +395,18 @@ def _render_shared_body(
         if architecture_style == "bullets"
         else _render_architecture_table(ctx.rules)
     )
+    sub_layer_block = _render_sub_layer_convention(ctx.rules)
 
     constraints = _render_constraints_section(ctx.rules)
 
     parts: List[str] = []
     if constraints:
         parts.append(constraints)
+    arch_section = ["## ⛔ 强制规则", "### 三层架构", arch_block]
+    if sub_layer_block:
+        arch_section.append(sub_layer_block)
+    parts.extend(arch_section)
     parts.extend([
-        "## ⛔ 强制规则",
-        "### 三层架构",
-        arch_block,
         "### 导入规则",
         _render_imports(ctx.rules),
         "### 命名规范",
@@ -445,6 +475,8 @@ class ClaudeAdapter(AgentAdapter):
             "- 同一 PostToolUse 还会按当前 file_path + 内容动态注入相关经验"
             "（inject-lessons.sh）\n"
             "- 验证失败会以 `decision: block` 返回；按 reason 修改后再保存\n"
+            "- 不要为了绕过验证自行执行 `harness mode relaxed/off`；"
+            "只有用户明确要求调整治理策略时才切换模式\n"
             "- 治理模式可通过 `harness mode <strict|relaxed|off>` 切换\n"
             "- 自动修复：`harness fix <file> --apply`（仅 import-forbidden 子集）\n\n"
             "## 🧭 rules.yaml 起草流程\n\n"
@@ -710,11 +742,13 @@ class ReadmeAdapter(AgentAdapter):
         return f"{README_AUTO_BEGIN}\n\n{body}\n\n{README_AUTO_END}"
 
     def _render_auto_body(self, ctx: GenerateContext) -> str:
+        sub_layer_section = _render_sub_layer_convention(ctx.rules)
+        sub_layer_block = f"\n\n{sub_layer_section}" if sub_layer_section else ""
         return f"""{_render_constraints_section(ctx.rules)}## ⛔ 当前强制规则
 
 ### 三层架构
 
-{_render_architecture_table(ctx.rules)}
+{_render_architecture_table(ctx.rules)}{sub_layer_block}
 
 > 配置位置：`.harness/rules.yaml` → `architecture.layers`
 

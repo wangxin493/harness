@@ -25,6 +25,10 @@ from lib.adapter import (  # noqa: E402
 
 RULES_YAML = textwrap.dedent("""\
 architecture:
+  sub_layer_convention:
+    components: component
+    hooks: hook
+    utils: util
   layers:
     - name: component
       paths: ["src/components/", "src/pages/"]
@@ -191,6 +195,20 @@ class TestAdapterRender(unittest.TestCase):
         out = ClaudeAdapter().render(ctx)
         # 例子中的默认路径应反映 rules.yaml 改动
         self.assertIn("src/widgets/UserAvatar.tsx", out)
+
+    def test_adapters_render_sub_layer_convention(self):
+        """Agent 文档必须展示局部子目录归层，避免误判 paths 前缀。"""
+        for adapter in (ClaudeAdapter(), ComateAdapter(), DuccAdapter()):
+            out = adapter.render(self.ctx)
+            self.assertIn("局部子目录归层", out)
+            self.assertIn("优先级高于 paths 前缀匹配", out)
+            self.assertIn("| `components` | component |", out)
+            self.assertIn("| `hooks` | hook |", out)
+            self.assertIn("| `utils` | util |", out)
+
+    def test_claude_warns_not_to_downgrade_mode_to_bypass_validation(self):
+        out = ClaudeAdapter().render(self.ctx)
+        self.assertIn("不要为了绕过验证自行执行 `harness mode relaxed/off`", out)
 
 
 # ---------------------------------------------------------------------------
