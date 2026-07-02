@@ -1,0 +1,30 @@
+# 发布时不打包的文件/目录
+# ──────────────────────────────
+
+# Python 运行时环境（由 postinstall 在用户机器上建）
+.harness/.venv/
+.harness/.pytest_cache/
+
+# 运行产物（项目态，不属于包）
+.harness/context/
+.harness/generated/
+.harness/memory/
+.harness/mode-config.json
+
+# 开发/测试资产（仅在 harness 源码仓库内有意义）
+.harness/docs/
+.harness/tests/
+.harness/VERIFY.md
+.harness/ARCHITECTURE.md
+.harness/.gitignore
+
+# IDE 和 Agent 会话数据
+.comate/
+.claude/
+.git/
+
+# 开发工具缓存
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -35,7 +37,14 @@ from typing import Any, Dict, List, Optional, Tuple
 # 注意：命令必须在 shell 层解析项目根，不能直接依赖 "$CLAUDE_PROJECT_DIR/..."，
 # 否则 Ducc / baidu-cc 等兼容环境未注入 CLAUDE_PROJECT_DIR 时脚本启动前就失败。
 _PROJECT_DIR_EXPR = 'PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${HARNESS_PROJECT_DIR:-$PWD}}"'
-HOOK_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/validate-code.sh"'
+# npm 包化：注入 HARNESS_BIN，优先用业务项目 node_modules/.bin/harness，fallback 全局 PATH
+_HARNESS_BIN_EXPR = (
+    '_NM_BIN="$PROJECT_DIR/node_modules/.bin/harness"; '
+    'HARNESS_BIN="${HARNESS_BIN:-$([ -x "$_NM_BIN" ] && echo "$_NM_BIN" || command -v harness 2>/dev/null || true)}"; '
+    'export HARNESS_BIN'
+)
+_CMD_PREFIX = _PROJECT_DIR_EXPR + '; ' + _HARNESS_BIN_EXPR + '; '
+HOOK_COMMAND = _CMD_PREFIX + 'bash "$PROJECT_DIR/.harness/hooks/validate-code.sh"'
 
 # 我们用于识别 hook 是不是 harness 装的子串（兼容历史命令和用户改过环境变量名的情况）
 HOOK_COMMAND_FINGERPRINT = ".harness/hooks/validate-code.sh"
@@ -43,11 +52,11 @@ HOOK_COMMAND_FINGERPRINT = ".harness/hooks/validate-code.sh"
 # Lesson 动态注入 hook —— 与 validate 是同位面的两个 PostToolUse hook
 # validate 拦截违规（exit 2）；inject-lessons 永远 exit 0 但通过 additionalContext
 # 给 Agent 推送相关团队经验。两者并存，互不影响。
-INJECT_LESSONS_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/inject-lessons.sh"'
+INJECT_LESSONS_COMMAND = _CMD_PREFIX + 'bash "$PROJECT_DIR/.harness/hooks/inject-lessons.sh"'
 INJECT_LESSONS_FINGERPRINT = ".harness/hooks/inject-lessons.sh"
 
 # SessionStart 刷新 generated/*.md，确保 lessons/sync 后 Agent 上下文及时更新。
-REFRESH_GENERATED_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/refresh-generated.sh"'
+REFRESH_GENERATED_COMMAND = _CMD_PREFIX + 'bash "$PROJECT_DIR/.harness/hooks/refresh-generated.sh"'
 REFRESH_GENERATED_FINGERPRINT = ".harness/hooks/refresh-generated.sh"
 
 # 所有 harness hook 指纹（_count / _remove 一并处理）
@@ -55,6 +64,13 @@ ALL_HOOK_FINGERPRINTS = (
     HOOK_COMMAND_FINGERPRINT,
     INJECT_LESSONS_FINGERPRINT,
     REFRESH_GENERATED_FINGERPRINT,
+)
+
+HOOK_TEMPLATE_FILES = (
+    "_fast_path.sh",
+    "validate-code.sh",
+    "inject-lessons.sh",
+    "refresh-generated.sh",
 )
 
 # CLAUDE.md 托管块标记
@@ -142,6 +158,10 @@ class ClaudeInstaller:
 
     def __init__(self, project_dir: Path) -> None:
         self.project_dir = Path(project_dir).resolve()
+        self.harness_dir = self.project_dir / ".harness"
+        self.hooks_dir = self.harness_dir / "hooks"
+        self.package_harness_dir = Path(__file__).resolve().parent.parent
+        self.hook_templates_dir = self.package_harness_dir / "hooks"
         self.settings_file = self.project_dir / ".claude" / "settings.json"
         self.claude_md = self.project_dir / "CLAUDE.md"
 
@@ -149,6 +169,7 @@ class ClaudeInstaller:
 
     def install(self, dry_run: bool = False) -> InstallResult:
         result = InstallResult(agent=self.AGENT_NAME, dry_run=dry_run)
+        self._install_hook_files(result, dry_run=dry_run)
         self._install_settings(result, dry_run=dry_run)
         self._install_claude_md(result, dry_run=dry_run)
         return result
@@ -157,6 +178,7 @@ class ClaudeInstaller:
         result = InstallResult(agent=self.AGENT_NAME, dry_run=dry_run)
         self._uninstall_settings(result, dry_run=dry_run)
         self._uninstall_claude_md(result, dry_run=dry_run)
+        self._uninstall_hook_files(result, dry_run=dry_run)
         return result
 
     def status(self) -> Dict[str, Any]:
@@ -170,6 +192,53 @@ class ClaudeInstaller:
             "claude_md_exists": self.claude_md.exists(),
             "claude_md_has_block": self._claude_md_has_block(),
         }
+
+    # -- hooks/：模板复制/移除 --------------------------------------------
+
+    def _install_hook_files(self, result: InstallResult, dry_run: bool) -> None:
+        """把包内 hook 模板复制到业务项目 .harness/hooks/。
+
+        复制列表：_fast_path.sh, validate-code.sh, inject-lessons.sh, refresh-generated.sh
+        不复制 .config.sh —— 它是 harness generate 生成的项目态产物。
+        """
+        if not dry_run:
+            self.hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in HOOK_TEMPLATE_FILES:
+            src = self.hook_templates_dir / filename
+            dst = self.hooks_dir / filename
+
+            if not src.exists():
+                result.add(dst, "unchanged", f"模板文件不存在，跳过: {filename}")
+                continue
+
+            src_bytes = src.read_bytes() if not dry_run else b""
+            if not dry_run:
+                is_same = dst.exists() and dst.read_bytes() == src_bytes
+            else:
+                is_same = dst.exists()  # dry-run 下保守判断
+
+            action = "unchanged" if is_same else ("updated" if dst.exists() else "created")
+            if action != "unchanged" and not dry_run:
+                shutil.copy2(str(src), str(dst))
+                # 确保有执行权限
+                mode = dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                dst.chmod(mode)
+
+            result.add(dst, action, f"hook 模板: {filename}")
+
+    def _uninstall_hook_files(self, result: InstallResult, dry_run: bool) -> None:
+        """移除 install 时复制的 hook 模板文件；不删除 .config.sh 或用户自定义脚本。"""
+        for filename in HOOK_TEMPLATE_FILES:
+            dst = self.hooks_dir / filename
+            if not dst.exists():
+                result.add(dst, "unchanged", f"不存在，跳过: {filename}")
+                continue
+            if not dry_run:
+                dst.unlink()
+            result.add(dst, "removed", f"已删除 hook 模板: {filename}")
+
+        # 如果 hooks/ 空了（仅剩 .config.sh 也删），则不主动删目录；目录留着无害。
 
     # -- settings.json：安装 ----------------------------------------------
 

@@ -3,11 +3,27 @@
   "version": "0.1.0",
   "description": "前端代码治理框架 — 分层架构校验、命名规范、依赖边界管控",
   "private": true,
+  "bin": {
+    "harness": ".harness/commands/harness"
+  },
   "scripts": {
+    "postinstall": "node scripts/postinstall.js",
     "test": "cd .harness && .venv/bin/python -m pytest tests/ -q",
     "test:full": "cd .harness && .venv/bin/python -m pytest tests/ -v"
   },
+  "files": [
+    ".harness/commands/",
+    ".harness/lib/",
+    ".harness/hooks/",
+    ".harness/templates/",
+    ".harness/requirements.txt",
+    ".harness/rules.yaml",
+    ".harness/VERSION",
+    "scripts/postinstall.js",
+    "README.md"
+  ],
   "engines": {
+    "node": ">=16",
     "python": ">=3.9"
   }
 }

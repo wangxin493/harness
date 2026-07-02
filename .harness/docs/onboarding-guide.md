@@ -35,26 +35,26 @@
 
 ---
 
-## §1  一键初始化（复制骨架 + 装依赖 + 接入）
+## §1  一键初始化（npm 安装 + 接入）
 
-`cd` 到目标项目根目录，复制以下**一行命令**直接执行：
+`cd` 到目标项目根目录，执行：
 
 ```bash
-mkdir -p .harness && rsync -a --exclude 'rules.yaml' --exclude 'context/' --exclude 'mode-config.json' --exclude 'memory/' --exclude 'generated/' --exclude '.venv/' --exclude 'README.md' --exclude 'hooks/.config.sh' --exclude 'tests/' --exclude 'docs/' --exclude 'ARCHITECTURE.md' --exclude 'VERIFY.md' <harness-source>/.harness/ .harness/ && chmod +x .harness/commands/harness && python3 -m venv .harness/.venv && .harness/.venv/bin/pip install -r .harness/requirements.txt && .harness/commands/harness setup --agent ducc --interactive
+npm install --save-dev @befe/harness
+npx harness setup --agent ducc --interactive
 ```
 
-这行命令依次做了：
+这两条命令依次做了：
 
 | 步骤 | 说明 |
 |---|---|
-| `rsync …` | 从 harness 工程克隆路径（`<harness-source>`）复制 `.harness/` 骨架，跳过 `rules.yaml / context/ / generated/ / .venv/` 等项目产物 |
-| `chmod +x` | 给 `harness` 命令加执行权限 |
-| `python3 -m venv` + `pip install` | 建 `.harness/.venv` 并安装依赖 |
-| `harness setup --agent ducc --interactive` | 交互式完成 `init`（生成 rules.yaml）+ `install`（写 CLAUDE.md + settings.json）+ `scan`（生成 generated/） |
+| `npm install --save-dev @befe/harness` | 安装 harness npm 包；postinstall 会在包内自动创建 Python venv 并安装依赖 |
+| `npx harness setup --agent ducc --interactive` | 交互式完成 `init`（生成 rules.yaml）+ `install`（复制 hook 模板、写 CLAUDE.md + settings.json）+ `scan`（生成 generated/） |
 
 > **新项目 / 不想交互**：去掉末尾的 `--interactive`，setup 会用全默认值自动跑完。  
-> **使用 claude / baidu-cc**：把 `--agent ducc` 改成 `--agent claude` 或 `--agent baidu-cc`。
-> **关于 `<harness-source>`**：当前阶段它表示 harness 工程的本地克隆路径；后续 npm 包化后，这一步会替换为 `npm install --save-dev @befe/harness`。
+> **使用 claude / baidu-cc**：把 `--agent ducc` 改成 `--agent claude` 或 `--agent baidu-cc`。  
+> **本地开发调试**：npm 包发布前，可用本地路径安装：  
+> `npm install --save-dev file:<harness-source>` 其中 `<harness-source>` 是 harness 工程的本地克隆路径。
 
 ---
 
@@ -64,29 +64,29 @@ mkdir -p .harness && rsync -a --exclude 'rules.yaml' --exclude 'context/' --excl
 
 ```bash
 # 1. 只读探测 facts
-.harness/commands/harness probe --json > /tmp/harness-probe.json
+npx harness probe --json > /tmp/harness-probe.json
 
 # 2. Agent 根据 facts 起草 /tmp/harness-rules.yaml
 #    - probe 输出的 sub_layer_convention_hint 非空时，必须写入 architecture.sub_layer_convention
 #    - 对不确定的层归属和 source_root 必须先问用户
 
 # 3. 写入规则
-.harness/commands/harness init --rules /tmp/harness-rules.yaml
+npx harness init --rules /tmp/harness-rules.yaml
 
 # 4. 安装 Agent hook
-.harness/commands/harness install --agent claude   # 或 ducc / baidu-cc
+npx harness install --agent claude   # 或 ducc / baidu-cc
 
 # 5. 扫描并生成 Agent 文档
-.harness/commands/harness scan
+npx harness scan
 
 # 6. 体检
-.harness/commands/harness doctor
+npx harness doctor
 ```
 
 ### 路径 B：新项目 / 结构标准 — 一键 setup
 
 ```bash
-.harness/commands/harness setup --agent claude
+npx harness setup --agent claude
 ```
 
 `setup` = `init --yes` + `install --agent claude` + `scan`，全自动完成。  
@@ -97,22 +97,22 @@ mkdir -p .harness && rsync -a --exclude 'rules.yaml' --exclude 'context/' --excl
 #### C-1  先把模式设为 off，防止未配置时误拦截
 
 ```bash
-.harness/commands/harness mode off
+npx harness mode off
 ```
 
 #### C-2  跑探针，Agent 起草 rules.yaml
 
 ```bash
-.harness/commands/harness probe --json > /tmp/harness-probe.json
+npx harness probe --json > /tmp/harness-probe.json
 # Agent 根据 facts 起草规则（保守原则：source_root 只指向前端主源码，命名先关或用 adopt）
 # probe 输出 sub_layer_convention_hint 非空时，写入 architecture.sub_layer_convention
-.harness/commands/harness init --rules /tmp/harness-rules.yaml
+npx harness init --rules /tmp/harness-rules.yaml
 ```
 
 也可走旧链路交互式 init：
 
 ```bash
-.harness/commands/harness init
+npx harness init
 ```
 
 init 分三阶段：
@@ -139,10 +139,10 @@ init 分三阶段：
 
 ```bash
 # 安装 settings.json hook + CLAUDE.md 托管块
-.harness/commands/harness install --agent claude   # 或 ducc / baidu-cc
+npx harness install --agent claude   # 或 ducc / baidu-cc
 
 # 扫描代码，生成 .harness/generated/claude.md
-.harness/commands/harness scan
+npx harness scan
 ```
 
 ---
@@ -187,20 +187,20 @@ naming:                       # ← 老项目建议先全删或全用 adopt 方�
 
 ```bash
 # 1. 体检（13 ok / 0 error 为正常）
-.harness/commands/harness doctor
+npx harness doctor
 
 # 2. 看扫描是否覆盖到文件
-.harness/commands/harness scan --json | python3 -m json.tool | head -20
+npx harness scan --json | python3 -m json.tool | head -20
 # total_files > 0 才说明 source_root 对上了
 
 # 3. 单文件试验证
-.harness/commands/harness validate src/components/Foo.tsx
+npx harness validate src/components/Foo.tsx
 
 # 4. 批量验证全项目或指定子目录
-.harness/commands/harness validate-all
+npx harness validate-all
 
 # 5. 全局检查（依赖循环 / 死代码；依赖 scan 产物）
-.harness/commands/harness check
+npx harness check
 ```
 
 ### 常见异常
@@ -247,7 +247,7 @@ PostToolUse hook 自动触发 validate-code.sh
 
 ```bash
 # 移除 settings.json 里的 harness hook + CLAUDE.md 托管块
-.harness/commands/harness uninstall --agent claude
+npx harness uninstall --agent claude
 
 # 如果要彻底清理，删掉整个 .harness/ 目录
 rm -rf .harness/

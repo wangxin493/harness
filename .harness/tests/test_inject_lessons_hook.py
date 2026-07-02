@@ -61,6 +61,9 @@ class InjectHookFixture:
         env = os.environ.copy()
         env["CLAUDE_PROJECT_DIR"] = str(self.root)
         env.pop("HARNESS_PROJECT_DIR", None)  # 让 hook 自己决定
+        # npm 包化后 _fast_path.sh 不再从 $PROJECT_DIR/.harness/commands/harness 查找 CLI；
+        # 测试里通过 HARNESS_BIN 显式指向 fixture 的 commands/harness。
+        env["HARNESS_BIN"] = str(self.root / ".harness" / "commands" / "harness")
         return subprocess.run(
             ["bash", str(HOOK_SCRIPT)],
             input=json.dumps(payload),

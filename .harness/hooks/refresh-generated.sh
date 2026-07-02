@@ -15,9 +15,19 @@
 set -uo pipefail
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${HARNESS_PROJECT_DIR:-$(pwd)}}"
-HARNESS_BIN="$PROJECT_DIR/.harness/commands/harness"
+PROJECT_DIR="${PROJECT_DIR%/}"
 
-if [ ! -x "$HARNESS_BIN" ]; then
+# npm 包化：HARNESS_BIN 优先使用 node_modules/.bin/harness，fallback 全局 PATH
+if [ -z "${HARNESS_BIN:-}" ]; then
+    _NM_BIN="$PROJECT_DIR/node_modules/.bin/harness"
+    if [ -x "$_NM_BIN" ]; then
+        HARNESS_BIN="$_NM_BIN"
+    else
+        HARNESS_BIN="$(command -v harness 2>/dev/null || true)"
+    fi
+fi
+
+if [ -z "${HARNESS_BIN:-}" ]; then
     # harness 未初始化：什么都不做
     exit 0
 fi

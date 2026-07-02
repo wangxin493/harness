@@ -28,10 +28,20 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${HARNESS_PROJECT_DIR:-$(pwd)}}"
 # 去掉 PROJECT_DIR 末尾斜杠,避免 case "$PROJECT_DIR"/* 匹配双斜杠出错
 PROJECT_DIR="${PROJECT_DIR%/}"
 HARNESS_DIR="$PROJECT_DIR/.harness"
-HARNESS_BIN="$HARNESS_DIR/commands/harness"
 
-if [ ! -d "$HARNESS_DIR" ] || [ ! -x "$HARNESS_BIN" ]; then
-    # Harness 未初始化:放行
+# npm 包化：HARNESS_BIN 优先使用 node_modules/.bin/harness，fallback 全局 PATH
+# 仍允许外部通过 HARNESS_BIN 环境变量显式覆盖（installer 注入、测试脚本等）
+if [ -z "${HARNESS_BIN:-}" ]; then
+    _NM_BIN="$PROJECT_DIR/node_modules/.bin/harness"
+    if [ -x "$_NM_BIN" ]; then
+        HARNESS_BIN="$_NM_BIN"
+    else
+        HARNESS_BIN="$(command -v harness 2>/dev/null || true)"
+    fi
+fi
+
+if [ ! -d "$HARNESS_DIR" ] || [ -z "${HARNESS_BIN:-}" ]; then
+    # Harness 未初始化或 CLI 找不到:放行
     exit 0
 fi
 
