@@ -32,6 +32,7 @@ from lib.rules_utils import (
     normalize_layers,
     normalize_sub_layer_convention,
     parse_import_aliases,
+    validate_name_style,
 )
 
 
@@ -140,10 +141,11 @@ class IncrementalScanner:
 
     # -- 公共入口 -----------------------------------------------------------
 
-    def scan(self, force_full: bool = False) -> ScanResult:
+    def scan(self, force_full: bool = False, reset_baseline: bool = False) -> ScanResult:
         """执行扫描。
 
         force_full=True 时强制重新解析所有文件（无视 metadata 缓存）。
+        reset_baseline=True 时强制重建 naming-baseline.json（即使已存在）。
         """
         prev_meta = {} if force_full else self._load_scan_metadata()
         prev_files: Dict[str, Dict] = prev_meta.get("files", {}) if prev_meta else {}
@@ -195,6 +197,7 @@ class IncrementalScanner:
         self._write_dependency_graph(graph, reverse_graph)
         self._write_project_context(result)
         self._write_scan_metadata(result.files)
+        self._write_naming_baseline(result, force=reset_baseline)
 
         return result
 
@@ -434,6 +437,87 @@ class IncrementalScanner:
         return graph_out, reverse_out
 
     # -- 持久化 -------------------------------------------------------------
+
+    def _write_naming_baseline(self, result: ScanResult, force: bool = False) -> None:
+        """生成 naming-baseline.json：记录所有 adopt:* 规则下的存量命名违规。
+
+        只在 baseline 文件不存在（或 force=True）时写入，避免重跑 scan 把新增
+        违规也吸进基准线。
+        """
+        baseline_file = self.context_dir / "naming-baseline.json"
+        if not force and baseline_file.exists():
+            return
+
+        naming_rules: Dict[str, str] = dict(self.rules.get("naming") or {})
+        # 只关心 adopt:* 的层
+        adopt_layers = {
+            layer: style
+            for layer, style in naming_rules.items()
+            if isinstance(style, str) and style.startswith("adopt:")
+        }
+        if not adopt_layers:
+            return
+
+        issues = []
+        for record in result.files.values():
+            style = adopt_layers.get(record.layer)
+            if not style:
+                continue
+
+            rule_id = f"naming-{record.layer}"
+            # 取命名检查所需的名称列表（与 validator._extract_names_for_naming 逻辑一致）
+            names = self._extract_naming_names(record)
+            if not names:
+                names = [Path(record.file_path).stem]
+
+            for name in names:
+                reason = validate_name_style(name, style)
+                if reason:
+                    issues.append({
+                        "file": record.file_path,
+                        "rule_id": rule_id,
+                        "name": name,
+                    })
+
+        self.context_dir.mkdir(parents=True, exist_ok=True)
+        data = {
+            "schema_version": 1,
+            "updated_at": _now_iso(),
+            "issues": issues,
+        }
+        baseline_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    @staticmethod
+    def _extract_naming_names(record: FileRecord) -> List[str]:
+        """从 FileRecord 的 exports 提取命名检查用名称，与 validator 逻辑对齐。"""
+        layer = record.layer
+        if layer == "type":
+            return [
+                e["name"]
+                for e in record.exports
+                if e.get("kind") in ("interface", "type", "enum")
+                and e.get("name") and e.get("name") != "default"
+            ]
+        if layer == "component":
+            for e in record.exports:
+                if (e.get("returns_jsx") or e.get("kind") == "default") and e.get("name") and e.get("name") != "default":
+                    return [e["name"]]
+            return []
+        if layer == "hook":
+            for e in record.exports:
+                if e.get("name", "").startswith("use"):
+                    return [e["name"]]
+            return []
+        if layer == "service":
+            return [
+                e["name"]
+                for e in record.exports
+                if e.get("kind") in ("function", "const", "let", "var", "class", "default")
+                and e.get("name") and e.get("name") != "default"
+            ]
+        return []
 
     def _write_dependency_graph(
         self,

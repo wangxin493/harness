@@ -858,6 +858,110 @@ class TestNamingViolation(unittest.TestCase):
         naming = [i for i in issues if i.category == "naming"]
         self.assertEqual(naming, [])
 
+    def test_adopt_prefix_stripped_pascal(self):
+        # adopt:PascalCase 与 PascalCase 行为等价：小写名应被拦截
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("component: PascalCase", "component: adopt:PascalCase")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/components/userTable.tsx",
+            "export const userTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/userTable.tsx")
+        naming = [i for i in issues if i.rule_id == "naming-component"]
+        self.assertEqual(len(naming), 1, "adopt:PascalCase 应等价于 PascalCase，小写名应报 warning")
+
+    def test_adopt_prefix_stripped_valid_name_ok(self):
+        # adopt:PascalCase 下合规命名不应误报
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("component: PascalCase", "component: adopt:PascalCase")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/components/UserTable.tsx",
+            "export const UserTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/UserTable.tsx")
+        naming = [i for i in issues if i.category == "naming"]
+        self.assertEqual(naming, [], "adopt:PascalCase 下合规命名不应误报")
+
+    def test_adopt_baseline_existing_file_skipped(self):
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("component: PascalCase", "component: adopt:PascalCase")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        context_dir = self.fx.root / ".harness" / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        (context_dir / "naming-baseline.json").write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "old",
+            "issues": [{
+                "file": "src/components/userTable.tsx",
+                "rule_id": "naming-component",
+                "name": "userTable",
+            }],
+        }), encoding="utf-8")
+        self.fx.write(
+            "src/components/userTable.tsx",
+            "export const userTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/userTable.tsx")
+        naming = [i for i in issues if i.rule_id == "naming-component"]
+        self.assertEqual(naming, [])
+
+    def test_adopt_baseline_new_file_reported(self):
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("component: PascalCase", "component: adopt:PascalCase")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        context_dir = self.fx.root / ".harness" / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        (context_dir / "naming-baseline.json").write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "old",
+            "issues": [{
+                "file": "src/components/oldBad.tsx",
+                "rule_id": "naming-component",
+                "name": "oldBad",
+            }],
+        }), encoding="utf-8")
+        self.fx.write(
+            "src/components/userTable.tsx",
+            "export const userTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/userTable.tsx")
+        naming = [i for i in issues if i.rule_id == "naming-component"]
+        self.assertEqual(len(naming), 1)
+
+    def test_adopt_no_baseline_file_reports_all(self):
+        rules = (self.fx.root / ".harness" / "rules.yaml").read_text(encoding="utf-8")
+        rules = rules.replace("component: PascalCase", "component: adopt:PascalCase")
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/components/userTable.tsx",
+            "export const userTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/userTable.tsx")
+        naming = [i for i in issues if i.rule_id == "naming-component"]
+        self.assertEqual(len(naming), 1)
+
+    def test_non_adopt_style_ignores_naming_baseline(self):
+        context_dir = self.fx.root / ".harness" / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        (context_dir / "naming-baseline.json").write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "old",
+            "issues": [{
+                "file": "src/components/userTable.tsx",
+                "rule_id": "naming-component",
+                "name": "userTable",
+            }],
+        }), encoding="utf-8")
+        self.fx.write(
+            "src/components/userTable.tsx",
+            "export const userTable = () => <div/>;\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/userTable.tsx")
+        naming = [i for i in issues if i.rule_id == "naming-component"]
+        self.assertEqual(len(naming), 1)
+
     def test_unknown_layer_no_naming_check(self):
         self.fx.write(
             "src/utils/helper.ts",

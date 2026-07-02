@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import difflib
 import json
-import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from lib.ast_parser import TypeScriptParser
 from lib.rules_utils import (
@@ -26,6 +25,7 @@ from lib.rules_utils import (
     normalize_layers,
     normalize_sub_layer_convention,
     parse_import_aliases,
+    validate_name_style as _validate_name_style_util,
 )
 
 
@@ -93,6 +93,7 @@ class CodeValidator:
         # project-context.json：现有组件 / hook / api 的索引（用于命名相似度）
         # 延迟加载：每次 validate_file 时实时读，确保跟最新 scan 一致
         self._context_cache: Optional[Dict] = None
+        self._naming_baseline: Optional[Set[Tuple[str, str, str]]] = None
 
     # -- 公共 API -----------------------------------------------------------
 
@@ -263,13 +264,14 @@ class CodeValidator:
 
     # -- 命名格式 ------------------------------------------------------------
 
-    _PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
-    _CAMEL_RE = re.compile(r"^[a-z][A-Za-z0-9]*$")
-
     def _check_naming(self, rel_path: str, layer: str, parse_result) -> List[Issue]:
         style = (self.naming_rules.get(layer) or "").strip()
         if not style or layer == "unknown":
             return []
+
+        is_adopt = style.startswith("adopt:")
+        rule_id = f"naming-{layer}"
+        baseline = self._load_naming_baseline() if is_adopt else set()
 
         names = self._extract_names_for_naming(layer, parse_result)
         if not names:
@@ -280,8 +282,10 @@ class CodeValidator:
             reason = self._validate_name_style(name, style)
             if not reason:
                 continue
+            if is_adopt and (rel_path, rule_id, name) in baseline:
+                continue
             issues.append(Issue(
-                rule_id=f"naming-{layer}",
+                rule_id=rule_id,
                 severity="warning",
                 category="naming",
                 message=f"{layer} 命名 {name} 不符合 {style}：{reason}",
@@ -307,44 +311,31 @@ class CodeValidator:
 
     @classmethod
     def _validate_name_style(cls, name: str, style: str) -> Optional[str]:
-        validators: Dict[str, Callable[[str], Optional[str]]] = {
-            "PascalCase": cls._validate_pascal_name,
-            "camelCase": cls._validate_camel_name,
-            "camelCase-with-use-prefix": cls._validate_use_prefix_name,
-            "camelCase-with-Service-suffix": cls._validate_service_suffix_name,
-        }
-        validator = validators.get(style)
-        if validator is None:
-            return None
-        return validator(name)
+        return _validate_name_style_util(name, style)
 
-    @classmethod
-    def _validate_pascal_name(cls, name: str) -> Optional[str]:
-        if not cls._PASCAL_RE.match(name):
-            return "必须 PascalCase（首字母大写，只含字母数字）"
-        return None
+    def _load_naming_baseline(self) -> Set[Tuple[str, str, str]]:
+        if self._naming_baseline is not None:
+            return self._naming_baseline
 
-    @classmethod
-    def _validate_camel_name(cls, name: str) -> Optional[str]:
-        if not cls._CAMEL_RE.match(name):
-            return "必须 camelCase（首字母小写，只含字母数字）"
-        return None
+        baseline_file = self.harness_dir / "context" / "naming-baseline.json"
+        if not baseline_file.exists():
+            self._naming_baseline = set()
+            return self._naming_baseline
 
-    @classmethod
-    def _validate_use_prefix_name(cls, name: str) -> Optional[str]:
-        if not cls._CAMEL_RE.match(name):
-            return "必须 camelCase（首字母小写，只含字母数字）"
-        if not (name.startswith("use") and len(name) > 3 and name[3].isupper()):
-            return "必须以 use 开头，且 use 后第一个字母大写（例 useTodos）"
-        return None
-
-    @classmethod
-    def _validate_service_suffix_name(cls, name: str) -> Optional[str]:
-        if not cls._CAMEL_RE.match(name):
-            return "必须 camelCase（首字母小写，只含字母数字）"
-        if not name.endswith("Service") or name == "Service":
-            return "必须以 Service 结尾（例 userService）"
-        return None
+        try:
+            data = json.loads(baseline_file.read_text(encoding="utf-8"))
+            issues = data.get("issues") or []
+            self._naming_baseline = {
+                (item["file"], item["rule_id"], item["name"])
+                for item in issues
+                if isinstance(item, dict)
+                and isinstance(item.get("file"), str)
+                and isinstance(item.get("rule_id"), str)
+                and isinstance(item.get("name"), str)
+            }
+        except (json.JSONDecodeError, OSError, KeyError):
+            self._naming_baseline = set()
+        return self._naming_baseline
 
     # -- 命名相似度 ---------------------------------------------------------
 

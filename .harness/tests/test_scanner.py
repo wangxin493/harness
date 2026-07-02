@@ -52,9 +52,9 @@ class ScannerFixture:
         p.write_text(content, encoding="utf-8")
         return p
 
-    def scan(self, force_full: bool = False):
+    def scan(self, force_full: bool = False, reset_baseline: bool = False):
         scanner = IncrementalScanner(project_dir=self.root)
-        return scanner.scan(force_full=force_full)
+        return scanner.scan(force_full=force_full, reset_baseline=reset_baseline)
 
     def cleanup(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -234,13 +234,71 @@ class TestIncrementalScanner(unittest.TestCase):
         self.assertNotIn("src/components/Card.jsx", files)
         self.assertIn("src/components/Btn.tsx", files)
 
+    def test_scan_generates_naming_baseline_for_adopt_rules(self):
+        rules = RULES_YAML + textwrap.dedent("""\
+        naming:
+          component: adopt:PascalCase
+        """)
+        (self.fx.harness_dir / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write("src/components/userTable.tsx", "export const userTable = () => <div/>;\n")
 
-        """rules.yaml 调整 layers 后，即使文件 mtime/sha1 不变，layer 也必须按新规则重算。
+        self.fx.scan(force_full=True)
+        baseline = json.loads(
+            (self.fx.harness_dir / "context" / "naming-baseline.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(baseline["schema_version"], 1)
+        self.assertEqual(baseline["issues"], [{
+            "file": "src/components/userTable.tsx",
+            "rule_id": "naming-component",
+            "name": "userTable",
+        }])
 
-        回归测试：曾出现过 scanner 从 metadata 缓存里直读 layer 的 bug（fe-salary-adjustment
-        接入时暴露：第一次 scan 时 layers=[] 把全部文件标成 unknown，之后改 rules.yaml
-        加了 layers 再 scan，因 mtime 未变命中缓存，layer 仍是 unknown）。
-        """
+    def test_scan_does_not_overwrite_existing_naming_baseline(self):
+        rules = RULES_YAML + textwrap.dedent("""\
+        naming:
+          component: adopt:PascalCase
+        """)
+        (self.fx.harness_dir / "rules.yaml").write_text(rules, encoding="utf-8")
+        baseline_file = self.fx.harness_dir / "context" / "naming-baseline.json"
+        baseline_file.write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "old",
+            "issues": [{"file": "old.tsx", "rule_id": "naming-component", "name": "old"}],
+        }), encoding="utf-8")
+        self.fx.write("src/components/userTable.tsx", "export const userTable = () => <div/>;\n")
+
+        self.fx.scan(force_full=True)
+        baseline = json.loads(baseline_file.read_text(encoding="utf-8"))
+        self.assertEqual(baseline["issues"], [{
+            "file": "old.tsx",
+            "rule_id": "naming-component",
+            "name": "old",
+        }])
+
+    def test_scan_reset_baseline_overwrites_existing_naming_baseline(self):
+        rules = RULES_YAML + textwrap.dedent("""\
+        naming:
+          component: adopt:PascalCase
+        """)
+        (self.fx.harness_dir / "rules.yaml").write_text(rules, encoding="utf-8")
+        baseline_file = self.fx.harness_dir / "context" / "naming-baseline.json"
+        baseline_file.write_text(json.dumps({
+            "schema_version": 1,
+            "updated_at": "old",
+            "issues": [{"file": "old.tsx", "rule_id": "naming-component", "name": "old"}],
+        }), encoding="utf-8")
+        self.fx.write("src/components/userTable.tsx", "export const userTable = () => <div/>;\n")
+
+        self.fx.scan(force_full=True, reset_baseline=True)
+        baseline = json.loads(baseline_file.read_text(encoding="utf-8"))
+        self.assertEqual(baseline["issues"], [{
+            "file": "src/components/userTable.tsx",
+            "rule_id": "naming-component",
+            "name": "userTable",
+        }])
+
+    def test_layer_recomputed_when_rules_change_without_file_change(self):
+        """rules.yaml 调整 layers 后，即使文件 mtime/sha1 不变，layer 也必须按新规则重算。"""
         # 第一次：layers 留空
         empty_rules = textwrap.dedent("""\
             architecture:

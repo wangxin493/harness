@@ -417,9 +417,11 @@ Harness 是一个放在你项目里的**代码治理工具**，它帮你和你�
 
 # 2. 探测 + Agent 起草（不清楚的层归属一定问用户，不要自己猜）
 .harness/commands/harness probe --json > /tmp/harness-probe.json
-# ... Agent 起草 /tmp/harness-rules.yaml ...
+# ... Agent 起草 /tmp/harness-rules.yaml，命名规则用 adopt:<style> ...
 
 # 3. 写盘 + 安装 + 扫描
+#    首次 scan 会自动生成 .harness/context/naming-baseline.json
+#    把当前所有 adopt:* 命名违规固定为存量快照，之后只报新增
 .harness/commands/harness init --rules /tmp/harness-rules.yaml
 .harness/commands/harness install --agent ducc
 .harness/commands/harness scan
@@ -432,6 +434,11 @@ Harness 是一个放在你项目里的**代码治理工具**，它帮你和你�
 .harness/commands/harness mode relaxed   # 先只拦 error
 .harness/commands/harness mode strict    # 确定没噪音了再全拦
 ```
+
+> 如果后来又调整了 `rules.yaml naming.*`，需要重新固定存量快照：
+> ```bash
+> harness scan --reset-baseline
+> ```
 
 老项目的目标不是一次性零违规，而是：
 1. `source_root` 指对了，能扫到文件。

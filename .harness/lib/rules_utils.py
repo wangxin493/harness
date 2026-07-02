@@ -7,6 +7,37 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 
+_PASCAL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+_CAMEL_RE = re.compile(r"^[a-z][A-Za-z0-9]*$")
+
+
+def validate_name_style(name: str, style: str) -> Optional[str]:
+    """校验 name 是否符合 style。style 支持 adopt: 前缀（会被自动剥除）。
+
+    返回 None 表示合规；返回字符串表示违规原因。
+    未知 style 返回 None（静默放行）。
+    """
+    if style.startswith("adopt:"):
+        style = style[len("adopt:"):]
+    if style == "PascalCase":
+        if not _PASCAL_RE.match(name):
+            return "必须 PascalCase（首字母大写，只含字母数字）"
+    elif style == "camelCase":
+        if not _CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+    elif style == "camelCase-with-use-prefix":
+        if not _CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+        if not (name.startswith("use") and len(name) > 3 and name[3].isupper()):
+            return "必须以 use 开头，且 use 后第一个字母大写（例 useTodos）"
+    elif style == "camelCase-with-Service-suffix":
+        if not _CAMEL_RE.match(name):
+            return "必须 camelCase（首字母小写，只含字母数字）"
+        if not name.endswith("Service") or name == "Service":
+            return "必须以 Service 结尾（例 userService）"
+    return None
+
+
 def parse_import_aliases(scanner_cfg: Dict) -> List[Tuple[str, str]]:
     """统一解析 scanner.import_aliases / import_alias 配置。"""
     aliases: List[Tuple[str, str]] = []

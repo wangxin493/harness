@@ -106,8 +106,10 @@ def probe_cmd(as_json: bool) -> None:
               help="常驻进程：监听 src/ 文件变化，去抖后增量 scan（不自动 generate）")
 @click.option("--debounce", type=float, default=0.5, show_default=True,
               help="--watch 下，事件聚合到这个秒数才触发一次扫描")
+@click.option("--reset-baseline", "reset_baseline", is_flag=True,
+              help="强制重建 naming-baseline.json（adopt:* 规则下存量违规快照）")
 def scan_cmd(full: bool, no_generate: bool, as_json: bool,
-             watch: bool, debounce: float) -> None:
+             watch: bool, debounce: float, reset_baseline: bool) -> None:
     """扫描项目，产出 dep graph + project context；默认随后自动 generate。
 
     --watch 模式：前台常驻，监听 src/ 下的 .ts/.tsx/.d.ts；不调用 generate
@@ -137,7 +139,7 @@ def scan_cmd(full: bool, no_generate: bool, as_json: bool,
             if not as_json:
                 click.echo(f"⚠️  {auto_pull_warning}", err=True)
 
-    result = scanner.scan(force_full=full)
+    result = scanner.scan(force_full=full, reset_baseline=reset_baseline)
     summary = result.summary()
 
     generated_files: List[str] = []
