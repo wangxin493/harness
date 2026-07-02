@@ -31,20 +31,31 @@ from typing import Any, Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 
-# Claude Code hook 命令（识别 harness 安装的唯一依据；改了等于无法卸载历史安装）
-HOOK_COMMAND = 'bash "$CLAUDE_PROJECT_DIR/.harness/hooks/validate-code.sh"'
+# Claude Code hook 命令。
+# 注意：命令必须在 shell 层解析项目根，不能直接依赖 "$CLAUDE_PROJECT_DIR/..."，
+# 否则 Ducc / baidu-cc 等兼容环境未注入 CLAUDE_PROJECT_DIR 时脚本启动前就失败。
+_PROJECT_DIR_EXPR = 'PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${HARNESS_PROJECT_DIR:-$PWD}}"'
+HOOK_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/validate-code.sh"'
 
-# 我们用于识别 hook 是不是 harness 装的子串（兼容用户改过环境变量名的极端情况）
+# 我们用于识别 hook 是不是 harness 装的子串（兼容历史命令和用户改过环境变量名的情况）
 HOOK_COMMAND_FINGERPRINT = ".harness/hooks/validate-code.sh"
 
 # Lesson 动态注入 hook —— 与 validate 是同位面的两个 PostToolUse hook
 # validate 拦截违规（exit 2）；inject-lessons 永远 exit 0 但通过 additionalContext
 # 给 Agent 推送相关团队经验。两者并存，互不影响。
-INJECT_LESSONS_COMMAND = 'bash "$CLAUDE_PROJECT_DIR/.harness/hooks/inject-lessons.sh"'
+INJECT_LESSONS_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/inject-lessons.sh"'
 INJECT_LESSONS_FINGERPRINT = ".harness/hooks/inject-lessons.sh"
 
-# 所有 harness 在 PostToolUse 里装的 hook 指纹（_count / _remove 一并处理）
-ALL_POST_TOOL_FINGERPRINTS = (HOOK_COMMAND_FINGERPRINT, INJECT_LESSONS_FINGERPRINT)
+# SessionStart 刷新 generated/*.md，确保 lessons/sync 后 Agent 上下文及时更新。
+REFRESH_GENERATED_COMMAND = _PROJECT_DIR_EXPR + '; bash "$PROJECT_DIR/.harness/hooks/refresh-generated.sh"'
+REFRESH_GENERATED_FINGERPRINT = ".harness/hooks/refresh-generated.sh"
+
+# 所有 harness hook 指纹（_count / _remove 一并处理）
+ALL_HOOK_FINGERPRINTS = (
+    HOOK_COMMAND_FINGERPRINT,
+    INJECT_LESSONS_FINGERPRINT,
+    REFRESH_GENERATED_FINGERPRINT,
+)
 
 # CLAUDE.md 托管块标记
 CLAUDE_MD_BEGIN = "<!-- harness:begin (managed; do not edit between markers) -->"
@@ -193,15 +204,13 @@ class ClaudeInstaller:
                        "settings.json 中没有 harness 相关 hook")
             return
 
-        # 如果 settings.json 卸载完后变成空 hooks/空文件，是否删？保守起见保留文件，
-        # 让用户自己决定。仅写回精简后的内容。
         if not dry_run:
             self.settings_file.write_text(
                 json.dumps(new_data, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
         result.add(self.settings_file, "updated",
-                   f"已移除 {removed_count} 条 harness hook")
+                   f"已移除 {removed_count} 条 harness hook（含 PostToolUse + SessionStart）")
 
     def _settings_has_hook(self) -> bool:
         if not self.settings_file.exists():
@@ -227,59 +236,43 @@ class ClaudeInstaller:
     def _is_harness_hook_entry(hook_entry: Any) -> bool:
         """判断一个 hook 条目（hooks[].hooks[].command 的最内层）是否 harness 装的。
 
-        识别两类 PostToolUse hook：validate-code.sh + inject-lessons.sh
+        识别三类 hook：validate-code.sh / inject-lessons.sh / refresh-generated.sh
         """
         if not isinstance(hook_entry, dict):
             return False
         cmd = hook_entry.get("command")
         if not isinstance(cmd, str):
             return False
-        return any(fp in cmd for fp in ALL_POST_TOOL_FINGERPRINTS)
+        return any(fp in cmd for fp in ALL_HOOK_FINGERPRINTS)
 
     def _count_harness_hooks(self, settings: Dict[str, Any]) -> int:
         count = 0
-        post_tool = ((settings.get("hooks") or {}).get("PostToolUse") or [])
-        for group in post_tool:
-            for entry in (group.get("hooks") or []):
-                if self._is_harness_hook_entry(entry):
-                    count += 1
+        for groups in (settings.get("hooks") or {}).values():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                for entry in (group.get("hooks") or []):
+                    if self._is_harness_hook_entry(entry):
+                        count += 1
         return count
 
     def _merge_hook_into_settings(
         self, settings: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], str]:
-        """把 harness 的两个 PostToolUse hook（validate + inject-lessons）合并进 settings。
-
-        合并策略：
-        1. 先扫一遍 PostToolUse 所有 group，删掉**所有**老 harness hook 条目
-           （按 fingerprint 识别，覆盖 validate-code.sh + inject-lessons.sh 两种）
-        2. 找一个 matcher 等价于 "Write|Edit|MultiEdit" 的现有 group 把新条目插进去；
-           找不到就新建一个 group
-        3. 两个 hook 一起插入（顺序：validate 先于 inject-lessons，保持 stderr/stdout 语义独立）
-        """
-        # 深拷贝避免改入参
+        """把 harness 的 PostToolUse + SessionStart hook 合并进 settings。"""
         data = json.loads(json.dumps(settings)) if settings else {}
         hooks_node = data.setdefault("hooks", {})
         post_tool = hooks_node.setdefault("PostToolUse", [])
+        session_start = hooks_node.setdefault("SessionStart", [])
 
         target_matcher_set = {"Write", "Edit", "MultiEdit"}
         target_matcher_str = "Write|Edit|MultiEdit"
 
-        # --- 1) 移除所有"老的" harness hook（由 fingerprint 识别）-------
-        removed_old = 0
-        for group in post_tool:
-            inner = group.get("hooks") or []
-            kept = []
-            for entry in inner:
-                if self._is_harness_hook_entry(entry):
-                    removed_old += 1
-                    continue
-                kept.append(entry)
-            group["hooks"] = kept
-        # 清掉因为移除 harness 后变空的 group（仅当 group 整组只剩空 hooks 时）
+        removed_old = self._remove_harness_entries_from_groups(post_tool)
         post_tool[:] = [g for g in post_tool if (g.get("hooks") or [])]
+        removed_old += self._remove_harness_entries_from_groups(session_start)
+        session_start[:] = [g for g in session_start if (g.get("hooks") or [])]
 
-        # --- 2) 找一个目标 matcher 的 group ----------------------------
         target_group: Optional[Dict[str, Any]] = None
         for group in post_tool:
             matcher = group.get("matcher") or ""
@@ -287,20 +280,29 @@ class ClaudeInstaller:
                 target_group = group
                 break
 
-        new_entries = [
+        post_entries = [
             {"type": "command", "command": HOOK_COMMAND, "timeout": 30},
             {"type": "command", "command": INJECT_LESSONS_COMMAND, "timeout": 15},
         ]
 
         if target_group is not None:
-            target_group.setdefault("hooks", []).extend(new_entries)
+            target_group.setdefault("hooks", []).extend(post_entries)
             detail = f"已合并到现有 PostToolUse(matcher={target_matcher_str}) 组（validate + inject-lessons）"
         else:
             post_tool.append({
                 "matcher": target_matcher_str,
-                "hooks": new_entries,
+                "hooks": post_entries,
             })
             detail = f"已新增 PostToolUse(matcher={target_matcher_str}) 组（validate + inject-lessons）"
+
+        session_start.append({
+            "hooks": [{
+                "type": "command",
+                "command": REFRESH_GENERATED_COMMAND,
+                "timeout": 20,
+            }],
+        })
+        detail += "；已注册 SessionStart refresh-generated"
 
         if removed_old > 0:
             detail += f"；清理旧 harness hook {removed_old} 条"
@@ -312,10 +314,25 @@ class ClaudeInstaller:
     ) -> Tuple[Dict[str, Any], int]:
         """从 settings 里摘掉所有 harness 装的 hook，返回 (新 settings, 移除条数)。"""
         data = json.loads(json.dumps(settings)) if settings else {}
-        post_tool = ((data.get("hooks") or {}).get("PostToolUse") or [])
+        hooks_node = data.get("hooks") or {}
 
         removed = 0
-        for group in post_tool:
+        for event_name, groups in list(hooks_node.items()):
+            if not isinstance(groups, list):
+                continue
+            removed += self._remove_harness_entries_from_groups(groups)
+            hooks_node[event_name] = [g for g in groups if (g.get("hooks") or [])]
+            if not hooks_node[event_name]:
+                del hooks_node[event_name]
+
+        if "hooks" in data and not data["hooks"]:
+            del data["hooks"]
+
+        return data, removed
+
+    def _remove_harness_entries_from_groups(self, groups: List[Dict[str, Any]]) -> int:
+        removed = 0
+        for group in groups:
             inner = group.get("hooks") or []
             kept = []
             for entry in inner:
@@ -324,20 +341,7 @@ class ClaudeInstaller:
                     continue
                 kept.append(entry)
             group["hooks"] = kept
-
-        # 清掉空 group
-        if "hooks" in data and "PostToolUse" in data["hooks"]:
-            data["hooks"]["PostToolUse"] = [
-                g for g in post_tool if (g.get("hooks") or [])
-            ]
-            # 如果 PostToolUse 变成空数组，删掉它（让 settings 干净）
-            if not data["hooks"]["PostToolUse"]:
-                del data["hooks"]["PostToolUse"]
-            # 如果 hooks 空了，也删掉
-            if not data["hooks"]:
-                del data["hooks"]
-
-        return data, removed
+        return removed
 
     # -- CLAUDE.md：安装/卸载 ---------------------------------------------
 

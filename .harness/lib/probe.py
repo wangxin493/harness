@@ -82,6 +82,11 @@ class ProbeReport:
     # 不能机械决策的提示，留给 resolver 给用户看
     notes: List[str] = field(default_factory=list)
 
+    # 在 unknown 层目录内检测到的约定子目录名 → 推荐层名。
+    # 例：{"components": "component", "hooks": "hook", "utils": "util"}
+    # 供 Agent 起草 rules.yaml 时自动写入 architecture.sub_layer_convention。
+    sub_layer_convention_hint: Dict[str, str] = field(default_factory=dict)
+
 
 def probe_report_to_dict(report: ProbeReport) -> Dict:
     """把 ProbeReport 转成 CLI JSON 友好的 dict。"""
@@ -115,6 +120,11 @@ class ProjectProbe:
         "types": "type",
         "models": "type",
         "interfaces": "type",
+        "utils": "util",
+        "util": "util",
+        "utilities": "util",
+        "helpers": "util",
+        "decorators": "util",
     }
 
     # init 探测阶段按运行时代码文件统计；.d.ts 不参与命名采样。
@@ -290,9 +300,30 @@ class ProjectProbe:
                 file_count=real_count,
                 sample_names=samples[:10],
             ))
+            # 对 unknown 层目录额外扫一层子目录，收集约定子目录名作为
+            # sub_layer_convention hint，供 Agent 起草 rules.yaml 时参考。
+            if layer == "unknown":
+                self._probe_sub_layer_convention(child, report)
 
     # 探测命名时采样的最多文件数
     _NAMING_SAMPLE_LIMIT = 60
+
+    def _probe_sub_layer_convention(self, unknown_dir: Path, report: ProbeReport) -> None:
+        """在 unknown 层目录内递归搜索约定子目录名，更新 sub_layer_convention_hint。
+
+        只看 _DIR_LAYER_HINTS 里已有的子目录名（components/hooks/utils 等），
+        不进行额外推断，保持纯"观察事实"语义。
+        """
+        try:
+            for child in unknown_dir.rglob("*"):
+                if not child.is_dir():
+                    continue
+                name_lower = child.name.lower()
+                layer = self._DIR_LAYER_HINTS.get(name_lower)
+                if layer and name_lower not in report.sub_layer_convention_hint:
+                    report.sub_layer_convention_hint[child.name] = layer
+        except PermissionError:
+            pass
 
     @classmethod
     def _preferred_frontend_root(cls, first_level: List[Path]) -> Optional[Path]:
@@ -321,16 +352,6 @@ class ProjectProbe:
                 if len(out) >= limit:
                     break
         return out
-
-    @staticmethod
-    def _count_ts_files(folder: Path) -> int:
-        """向后兼容别名 → 委托给 _count_source_files。"""
-        return ProjectProbe._count_source_files(folder)
-
-    @staticmethod
-    def _collect_ts_files(folder: Path, limit: int) -> List[str]:
-        """向后兼容别名 → 委托给 _collect_source_files。"""
-        return ProjectProbe._collect_source_files(folder, limit)
 
     # -- 命名风格统计 ------------------------------------------------------
 

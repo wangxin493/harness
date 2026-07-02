@@ -62,8 +62,8 @@ class _InitFixture:
         (self.root / "src" / "types" / "User.ts").write_text(
             "export type User = {};", encoding="utf-8")
         if with_unknown_dir:
-            (self.root / "src" / "utils").mkdir(parents=True)
-            (self.root / "src" / "utils" / "fmt.ts").write_text(
+            (self.root / "src" / "bizlogic").mkdir(parents=True)
+            (self.root / "src" / "bizlogic" / "fmt.ts").write_text(
                 "export const fmt = () => 1;", encoding="utf-8")
 
     def cleanup(self) -> None:
@@ -148,22 +148,22 @@ class TestInitWithUnknownDir(_InitCliBase):
         return _InitFixture(with_unknown_dir=True)
 
     def test_yes_uses_default_skip_for_unknown_dir(self) -> None:
-        # default_choice = "skip"，所以 utils 既不应进 exclude_dirs 也不进任何 paths
+        # default_choice = "skip"，所以 bizlogic 既不应进 exclude_dirs 也不进任何 paths
         result = self.runner.invoke(cli_module.cli, ["init", "--yes"])
         self.assertEqual(result.exit_code, 0, result.output)
         import yaml
         data = yaml.safe_load(
             (self.fx.root / ".harness" / "rules.yaml").read_text("utf-8"),
         )
-        self.assertNotIn("utils",
+        self.assertNotIn("bizlogic",
                          data.get("scanner", {}).get("exclude_dirs", []))
         for layer in data["architecture"]["layers"]:
-            self.assertNotIn("src/utils/", layer.get("paths", []))
+            self.assertNotIn("src/bizlogic/", layer.get("paths", []))
 
     def test_interactive_map_unknown_dir_to_layer(self) -> None:
         # 交互模式：unknown-dir 选 "3"（service），其它走默认回车
         # CliRunner.input 把字符按提示顺序喂进去
-        # 顺序：unknown-dir:utils → choice [3] = service
+        # 顺序：unknown-dir:bizlogic → choice [3] = service
         result = self.runner.invoke(
             cli_module.cli, ["init"], input="3\n",
         )
@@ -174,7 +174,7 @@ class TestInitWithUnknownDir(_InitCliBase):
         )
         svc = next(L for L in data["architecture"]["layers"]
                    if L["name"] == "service")
-        self.assertIn("src/utils/", svc["paths"])
+        self.assertIn("src/bizlogic/", svc["paths"])
 
 
 class TestInitNamingConflict(_InitCliBase):

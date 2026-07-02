@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from lib.ast_parser import TypeScriptParser
-from lib.rules_utils import classify_layer, normalize_layers, parse_import_aliases
+from lib.rules_utils import (
+    classify_layer,
+    normalize_layers,
+    normalize_sub_layer_convention,
+    parse_import_aliases,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,9 @@ class CodeValidator:
         self.rules = rules if rules is not None else self._load_rules()
         self.layers = normalize_layers(
             self.rules.get("architecture", {}).get("layers", [])
+        )
+        self.sub_layer_convention = normalize_sub_layer_convention(
+            (self.rules.get("architecture") or {}).get("sub_layer_convention")
         )
         self.naming_rules: Dict[str, str] = dict(self.rules.get("naming") or {})
         # 别名按前缀长度降序，确保 longer-prefix 优先匹配
@@ -140,8 +148,8 @@ class CodeValidator:
                 # type-only / 外部包不参与架构检查
                 if imp.is_type_only:
                     continue
-                target_layer = self._infer_target_layer(imp.source)
-                if target_layer is None:  # 外部 / 相对路径未匹配到任何层
+                target_layer = self._infer_target_layer(imp.source, rel_path)
+                if target_layer is None:  # 外部 / import 未匹配到任何层
                     continue
                 if target_layer not in allowed and target_layer != layer:
                     issues.append(Issue(
@@ -461,28 +469,37 @@ class CodeValidator:
     # -- 层级推断（_classify_layer 已迁移到 lib/rules_utils.py）-----------
 
     def _classify_layer(self, rel_posix: str) -> str:
-        return classify_layer(rel_posix, self.layers)
+        return classify_layer(rel_posix, self.layers, self.sub_layer_convention)
 
-    def _infer_target_layer(self, source: str) -> Optional[str]:
+    def _infer_target_layer(self, source: str, from_file: str = "") -> Optional[str]:
         """根据 import source 反查目标 layer。
 
-        - 使用 scanner.import_aliases 把项目真实别名映射为项目内路径
-        - 保留 @/ → src/ 的默认兼容映射
-        - 相对路径 / 外部包 → None（不参与架构检查）
+        - 别名路径：通过 import_aliases 映射到项目内路径
+        - 相对路径（./ ../）：基于 from_file 的绝对位置 resolve 后转项目内路径
+        - 外部包（裸名）→ None（不参与架构检查）
         """
-        synthetic = self._resolve_import_source(source)
+        synthetic = self._resolve_import_source(source, from_file)
         if synthetic is None:
             return None
-        for layer in self.layers:
-            for prefix in layer["paths"]:
-                # 让 "src/api" 匹配 "src/api/" 前缀
-                normalized = prefix.rstrip("/")
-                if synthetic == normalized or synthetic.startswith(normalized + "/"):
-                    return layer["name"]
-        return None
+        layer = classify_layer(synthetic, self.layers, self.sub_layer_convention)
+        return None if layer == "unknown" else layer
 
-    def _resolve_import_source(self, source: str) -> Optional[str]:
+    def _resolve_import_source(self, source: str, from_file: str = "") -> Optional[str]:
         normalized_source = source.replace("\\", "/")
+
+        # 相对路径：基于当前文件做 resolve，转成项目内相对路径参与 layer 匹配
+        if normalized_source.startswith("./") or normalized_source.startswith("../"):
+            if from_file:
+                abs_from = (self.project_dir / from_file).parent
+                try:
+                    resolved = (abs_from / normalized_source).resolve()
+                    return resolved.relative_to(self.project_dir).as_posix()
+                except ValueError:
+                    # 路径逃出 project_dir（不可能是项目内层违规）
+                    return None
+            return None
+
+        # 别名路径（原有逻辑不变）
         for prefix, target in self.import_aliases:
             exact_prefix = prefix.rstrip("/")
             if normalized_source == exact_prefix:
@@ -535,13 +552,3 @@ class CodeValidator:
             return {}
         return yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
 
-
-# ---------------------------------------------------------------------------
-# 便捷函数
-# ---------------------------------------------------------------------------
-
-
-def validate_file(file_path: str, project_dir: Optional[Path] = None) -> List[Dict]:
-    """供 CLI / Hook 使用的便捷入口。"""
-    validator = CodeValidator(project_dir or Path.cwd())
-    return [asdict(i) for i in validator.validate_file(file_path)]

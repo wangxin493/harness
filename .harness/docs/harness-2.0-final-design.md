@@ -1,6 +1,10 @@
 # Harness 2.0 最终设计方案
 
-> 基于审查反馈优化后的实施方案
+> **[历史文档 / ARCHIVED]**  
+> 本文件是 Harness 2.0 的早期架构设计草稿，包含 Phase 1-3 的整体方向和部分接口提案。  
+> **当前实际命令清单、CLI 接口和配置格式以 `lib/cli.py`、`harness --help` 和  
+> `.harness/docs/current-capabilities-and-onboarding.md` 为准，本文中的草稿内容  
+> （如 §五 CLI 草稿、§六 validator API、AutoFixer 全能力描述等）可能与实现不符。**
 
 ---
 

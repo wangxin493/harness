@@ -13,6 +13,9 @@ from lib.installer import (  # noqa: E402
     CLAUDE_MD_END,
     HOOK_COMMAND,
     HOOK_COMMAND_FINGERPRINT,
+    INJECT_LESSONS_COMMAND,
+    REFRESH_GENERATED_COMMAND,
+    REFRESH_GENERATED_FINGERPRINT,
     ClaudeInstaller,
     get_installer,
 )
@@ -60,12 +63,18 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         self.assertEqual(len(post), 1)
         self.assertEqual(set(post[0]["matcher"].split("|")),
                          {"Write", "Edit", "MultiEdit"})
-        # 安装两个 hook：validate-code.sh + inject-lessons.sh
+        # 安装两个 PostToolUse hook：validate-code.sh + inject-lessons.sh
         commands = [h["command"] for h in post[0]["hooks"]]
         self.assertEqual(len(commands), 2)
         self.assertIn(HOOK_COMMAND, commands)
-        from lib.installer import INJECT_LESSONS_COMMAND
         self.assertIn(INJECT_LESSONS_COMMAND, commands)
+        # 同时安装 SessionStart refresh-generated hook
+        session = data["hooks"]["SessionStart"]
+        self.assertEqual(len(session), 1)
+        self.assertEqual(
+            session[0]["hooks"][0]["command"],
+            REFRESH_GENERATED_COMMAND,
+        )
 
         # changes 列表里 settings 应记 created
         actions = {str(c.path): c.action for c in result.changes}
@@ -82,9 +91,14 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         data = json.loads(settings_file.read_text(encoding="utf-8"))
         post = data["hooks"]["PostToolUse"]
 
-        # 仍然只有 1 个 group、2 个 hook 条目（validate + inject-lessons）
+        # 仍然只有 1 个 PostToolUse group、2 个 hook 条目（validate + inject-lessons）
         self.assertEqual(len(post), 1)
         self.assertEqual(len(post[0]["hooks"]), 2)
+        self.assertEqual(len(data["hooks"]["SessionStart"]), 1)
+        self.assertEqual(
+            data["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            REFRESH_GENERATED_COMMAND,
+        )
 
         # 第二次 install 应该所有 change 都是 unchanged
         actions = {c.action for c in result.changes}
@@ -143,8 +157,13 @@ class TestClaudeInstallerSettings(unittest.TestCase):
         commands = {entry["command"] for g in post for entry in g["hooks"]}
         self.assertIn("~/.baidu-cc/hooks/data-report --post-tool-use", commands)
         self.assertIn(HOOK_COMMAND, commands)
-        from lib.installer import INJECT_LESSONS_COMMAND
         self.assertIn(INJECT_LESSONS_COMMAND, commands)
+
+        # SessionStart：baidu-cc 的原 hook 保留，harness refresh-generated 追加
+        session = data["hooks"]["SessionStart"]
+        session_cmds = [g["hooks"][0]["command"] for g in session]
+        self.assertIn("~/.baidu-cc/hooks/data-report --session-start", session_cmds)
+        self.assertIn(REFRESH_GENERATED_COMMAND, session_cmds)
 
         # 其它顶级 key（permissions）也保留
         self.assertEqual(data["permissions"]["deny"], ["WebSearch"])
@@ -174,11 +193,40 @@ class TestClaudeInstallerSettings(unittest.TestCase):
             (self.tmp.root / ".claude" / "settings.json").read_text(encoding="utf-8")
         )
 
-        # 第三方 hook 还在
+        # 第三方 PostToolUse hook 还在
         self.assertEqual(len(data["hooks"]["PostToolUse"]), 1)
         cmd = data["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
         self.assertNotIn(HOOK_COMMAND_FINGERPRINT, cmd)
         self.assertIn("data-report", cmd)
+        # harness SessionStart 被清空后 key 应删除
+        self.assertNotIn("SessionStart", data.get("hooks", {}))
+
+
+    def test_uninstall_removes_legacy_refresh_hook(self) -> None:
+        existing = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command",
+                                "command": "bash \"$CLAUDE_PROJECT_DIR/.harness/hooks/refresh-generated.sh\"",
+                                "timeout": 20}]},
+                    {"hooks": [{"type": "command",
+                                "command": "~/.baidu-cc/hooks/data-report --session-start",
+                                "timeout": 10}]},
+                ],
+            },
+        }
+        self.tmp.write(
+            ".claude/settings.json",
+            json.dumps(existing, ensure_ascii=False, indent=2),
+        )
+        self.tmp.installer().uninstall()
+
+        data = json.loads(
+            (self.tmp.root / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        cmds = [g["hooks"][0]["command"] for g in data["hooks"]["SessionStart"]]
+        self.assertNotIn(REFRESH_GENERATED_FINGERPRINT, "\n".join(cmds))
+        self.assertIn("~/.baidu-cc/hooks/data-report --session-start", cmds)
 
     def test_uninstall_when_nothing_installed_is_noop(self) -> None:
         # settings.json 不存在

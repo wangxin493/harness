@@ -136,6 +136,29 @@ class TestValidateTruncation(unittest.TestCase):
         self.assertIn("验证通过", result.output)
         self.assertNotIn("已截断", result.output)
 
+    def test_mode_off_shows_warning_not_empty_ok(self):
+        """C10: mode=off 时人读输出是明确警告，不是"验证通过"。"""
+        import json
+        root = Path(tempfile.mkdtemp(prefix="harness-off-")).resolve()
+        try:
+            (root / ".harness").mkdir()
+            (root / ".harness" / "mode-config.json").write_text(
+                json.dumps({"mode": "off"}), encoding="utf-8")
+            (root / ".harness" / "rules.yaml").write_text(
+                RULES_YAML, encoding="utf-8")
+            (root / "src" / "api").mkdir(parents=True)
+            (root / "src" / "api" / "x.ts").write_text("export const x = 1;\n")
+            runner = CliRunner()
+            result = runner.invoke(
+                cli_module.cli, ["validate", "src/api/x.ts"],
+                catch_exceptions=False,
+                env={"HARNESS_PROJECT_DIR": str(root)},
+            )
+            self.assertIn("mode=off", result.output)
+            self.assertNotIn("验证通过", result.output)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 class TestValidateTruncationConfigurable(unittest.TestCase):
     def test_rules_yaml_override_to_3(self):

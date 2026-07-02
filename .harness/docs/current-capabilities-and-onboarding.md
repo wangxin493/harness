@@ -1,6 +1,6 @@
 # Harness 当前功能与新老项目接入逻辑
 
-> 更新时间：2026-07-01  
+> 更新时间：2026-07-02  
 > 适用范围：Harness 2.0 当前实现（Claude / Ducc / baidu-cc 适配）
 
 ---
@@ -13,14 +13,14 @@ Harness 是一套放在项目内的代码治理框架，目标不是替代业务
 
 | 职责 | 说明 |
 |---|---|
-| 架构规则治理 | 用 `rules.yaml` 定义分层、可导入关系、允许别名、命名规则 |
+| 架构规则治理 | 用 `rules.yaml` 定义分层、可导入关系、允许别名、命名规则；支持 `sub_layer_convention` 局部子目录归层 |
 | Agent 上下文生成 | 根据扫描结果生成 `.harness/generated/*.md`，供 Claude / Ducc / Comate 等 Agent 读取 |
 | 编辑后自动校验 | PostToolUse hook 在 Agent 修改代码后自动触发 `harness validate` |
 | 经验沉淀 | 本地/团队 lesson 进入生成文档和 hook 注入链路 |
 | 接入体检 | `harness doctor` 检查依赖、规则、生成物、hook 配置是否同步 |
 | 渐进治理 | `strict / relaxed / off` 三档治理力度，支持老项目低风险接入 |
-| 模板新建 | `harness new` 按规则生成 component / page / hook / service / type 文件 |
-| 局部自动修复 | `harness fix --apply` 支持 `import-forbidden` 子集修复 |
+| 模板新建 | `harness new <kind> <name> [--path <dir>]` 按规则生成 component / page / hook / service / type 文件 |
+| 局部自动修复 | `harness fix <file> --apply` 支持 `import-forbidden` 子集修复（能力边界：仅 import-forbidden，不是通用 autofix） |
 
 ---
 
@@ -54,7 +54,7 @@ Harness 是一套放在项目内的代码治理框架，目标不是替代业务
 
 | 命令 | 作用 |
 |---|---|
-| `harness probe --json` | 只读探测项目 facts，供 Agent 起草 `rules.yaml` |
+| `harness probe --json` | 只读探测项目 facts，输出 `ProbeReport`（含 `sub_layer_convention_hint`），供 Agent 起草 `rules.yaml` |
 | `harness init` | 旧链路：probe -> resolver -> 交互选择 -> 写 `rules.yaml` |
 | `harness init --yes` | 旧链路：所有 conflict 走默认值，非交互写盘 |
 | `harness init --rules <file>` | 新链路：写入 Agent 起草好的 `rules.yaml` |
@@ -75,8 +75,10 @@ Harness 是一套放在项目内的代码治理框架，目标不是替代业务
 | 命令 | 作用 |
 |---|---|
 | `harness validate <file>` | 验证单文件 |
-| `harness check` | 全局检查，例如依赖循环/全局架构问题 |
+| `harness validate-all [PATH]` | 遍历全项目（或指定子目录）所有已扫描文件，聚合输出 |
+| `harness check` | 全局检查：循环依赖（Tarjan）+ 死代码（无引用导出）；需先 `harness scan` |
 | `harness doctor` | 体检环境、依赖、规则、生成物漂移 |
+| `harness status` | 查看 Harness 版本、治理模式和最近扫描概况 |
 | `harness mode` | 查看当前治理模式 |
 | `harness mode strict` | 严格拦截 |
 | `harness mode relaxed` | 放宽治理，适合老项目过渡 |
@@ -86,8 +88,8 @@ Harness 是一套放在项目内的代码治理框架，目标不是替代业务
 
 | 命令 | 作用 |
 |---|---|
-| `harness fix <file> --apply` | 自动修复部分 import 违规 |
-| `harness new <kind> <name>` | 按规则生成新文件骨架 |
+| `harness fix <file> --apply` | 自动修复 `import-forbidden` 子集（仅此，非通用 autofix） |
+| `harness new <kind> <name> [--path <dir>]` | 按规则生成新文件骨架，成功后自动刷新 generated |
 | `harness lesson add` | 添加本地经验 |
 | `harness sync` | 同步团队经验市场 |
 
@@ -121,7 +123,68 @@ harness doctor
 
 ---
 
-## 5. 新项目接入逻辑
+## 5. sub_layer_convention — 局部子目录归层
+
+### 背景
+
+`rules.yaml` 的 `architecture.layers[].paths` 只做前缀匹配。如果 `src/frontend/module/` 被整体归为 `page` 层，它下面所有的 `module/**/components/`、`module/**/hooks/` 也会被归为 page 层，导致 hook 调用被错误拦截。
+
+### 配置方式
+
+在 `rules.yaml` 的 `architecture` 下增加：
+
+```yaml
+architecture:
+  sub_layer_convention:
+    components: component   # 任意层下的 components/ → component 层
+    hooks: hook             # 任意层下的 hooks/ → hook 层
+    utils: util             # 任意层下的 utils/ → util 层
+  layers:
+    - name: page
+      paths: [src/frontend/module/]
+      ...
+```
+
+### 优先级
+
+**sub_layer_convention 优先于 paths 前缀匹配**。文件归层时，先按路径中的目录名查 convention，有匹配就直接用约定层；无匹配再走 paths 前缀。
+
+示例：
+
+| 文件路径 | 无 convention 归层 | 有 convention 归层 |
+|---|---|---|
+| `src/frontend/module/A/components/Foo.tsx` | page（被 `module/` 前缀吃掉）| **component**（被 `components` 约定捕获）|
+| `src/frontend/module/A/hooks/useBar.ts` | page | **hook** |
+| `src/frontend/module/A/index.tsx` | page | page（无约定目录，走前缀）|
+
+### probe 的支持
+
+`harness probe --json` 输出中新增 `sub_layer_convention_hint` 字段：
+
+```json
+{
+  "sub_layer_convention_hint": {
+    "components": "component",
+    "hooks": "hook",
+    "utils": "util"
+  }
+}
+```
+
+probe 会递归扫描 unknown 层目录（即不在 `_DIR_LAYER_HINTS` 常规命名表里的目录），发现已知约定子目录名后收进 hint。Agent 起草 `rules.yaml` 时应把 hint 直接写入 `architecture.sub_layer_convention`，避免接入后才发现误分类问题。
+
+### 适用范围
+
+此机制对所有项目通用，不限于 `module/` 命名：
+
+- `src/features/**` — 按功能分组的模块化架构
+- `src/views/**` — Vue 风格视图目录
+- `src/pages/**` — 页面内的局部子层
+- 任意顶层路径名，只要内部有约定子目录就能自动归层
+
+---
+
+## 6. 新项目接入逻辑
 
 新项目特点：目录结构清晰、存量代码少、可以尽早上规则。
 
@@ -173,13 +236,13 @@ harness doctor
 
 ---
 
-## 6. 老项目接入逻辑
+## 7. 老项目接入逻辑
 
 老项目特点：目录历史包袱多、命名不统一、层边界不清晰、不能一上来严格拦截。
 
 推荐步骤：
 
-### 6.1 先关闭治理
+### 7.1 先关闭治理
 
 ```bash
 harness mode off
@@ -187,7 +250,7 @@ harness mode off
 
 目的：先完成接入和 baseline 梳理，不要因为规则未对齐误拦截开发。
 
-### 6.2 只读探测
+### 7.2 只读探测
 
 ```bash
 harness probe --json > /tmp/harness-probe.json
@@ -202,8 +265,9 @@ Agent 要重点分析：
 | `naming` | 当前命名风格是否值得治理，还是先关闭某些命名规则 |
 | `notes` | 是否有 `dual-stack-hint` 这类 source_root 提示 |
 | `frameworks` | React/Vue 等框架决定 hook/page/component 约束方式 |
+| `sub_layer_convention_hint` | 模块内是否有 `components/hooks/utils` 这类局部子目录约定；有则写入 `architecture.sub_layer_convention` |
 
-### 6.3 Agent 起草 rules.yaml
+### 7.3 Agent 起草 rules.yaml
 
 老项目建议保守：
 
@@ -211,9 +275,10 @@ Agent 要重点分析：
 - 暂时排除 `dist/build/node_modules/.git` 等目录。
 - 对历史混乱目录，不确定就先不纳入层，或单独问用户。
 - `naming` 可以先关闭或采用现状，避免大面积噪音。
+- 如果 probe 输出 `sub_layer_convention_hint`，优先写入 `architecture.sub_layer_convention`，避免模块内局部组件、hook 被父层路径误归类。
 - `mode` 先用 `relaxed`，等 baseline 收敛后再切 `strict`。
 
-### 6.4 写盘 + 扫描 + 体检
+### 7.4 写盘 + 扫描 + 体检
 
 ```bash
 harness init --rules /tmp/harness-rules.yaml
@@ -221,7 +286,7 @@ harness scan
 harness doctor
 ```
 
-### 6.5 渐进收紧
+### 7.5 渐进收紧
 
 ```bash
 harness mode relaxed
@@ -239,7 +304,7 @@ harness mode strict
 
 ---
 
-## 7. setup 与 init --rules 的边界
+## 8. setup 与 init --rules 的边界
 
 | 问题 | 结论 |
 |---|---|
@@ -252,20 +317,21 @@ harness mode strict
 
 ---
 
-## 8. 推荐 Agent 操作准则
+## 9. 推荐 Agent 操作准则
 
 Agent 在接入项目时应遵守：
 
 1. 先读 `harness probe --json`，不要直接猜规则。
 2. 结合项目代码、目录、import 和用户说明起草 `rules.yaml`。
-3. 对不确定的层归属、source_root、命名规则，先问用户。
-4. 不要把资源目录、构建产物、后端目录纳入前端治理层。
-5. 写盘后必须跑 `harness scan` 和 `harness doctor`。
-6. 老项目默认从 `mode off/relaxed` 开始，避免误拦截。
+3. 如果 probe 输出 `sub_layer_convention_hint` 非空，**必须**把它写入 `architecture.sub_layer_convention`。
+4. 对不确定的层归属、source_root、命名规则，先问用户。
+5. 不要把资源目录、构建产物、后端目录纳入前端治理层。
+6. 写盘后必须跑 `harness scan` 和 `harness doctor`。
+7. 老项目默认从 `mode off/relaxed` 开始，避免误拦截。
 
 ---
 
-## 9. 推荐命令速查
+## 10. 推荐命令速查
 
 ```bash
 # 只读探测 facts
@@ -294,6 +360,12 @@ harness mode strict
 # 验证单文件
 harness validate src/components/Foo.tsx
 
-# 全局检查
+# 批量验证全项目
+harness validate-all
+
+# 全局检查（需先 scan）
 harness check
+
+# 自动修复 import-forbidden 子集
+harness fix src/components/Foo.tsx --apply
 ```

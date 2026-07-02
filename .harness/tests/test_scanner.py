@@ -208,7 +208,33 @@ class TestIncrementalScanner(unittest.TestCase):
         files = set(result.files.keys())
         self.assertNotIn("src/node_modules/pkg/index.ts", files)
 
-    def test_layer_reclassified_when_rules_change(self):
+    def test_js_jsx_files_scanned_when_configured(self):
+        """rules.yaml include_extensions 含 .js/.jsx 时，JS 文件被扫描和分层。"""
+        js_rules = RULES_YAML.replace(
+            'include_extensions: [".ts", ".tsx", ".d.ts"]',
+            'include_extensions: [".ts", ".tsx", ".d.ts", ".js", ".jsx"]',
+        )
+        (self.fx.harness_dir / "rules.yaml").write_text(js_rules, encoding="utf-8")
+        self.fx.write("src/components/Card.jsx", "export const Card = () => <div/>;")
+        self.fx.write("src/api/userService.js", "export const userService = {};")
+
+        result = self.fx.scan(force_full=True)
+        files = set(result.files.keys())
+        self.assertIn("src/components/Card.jsx", files)
+        self.assertIn("src/api/userService.js", files)
+        self.assertEqual(result.files["src/components/Card.jsx"].layer, "component")
+        self.assertEqual(result.files["src/api/userService.js"].layer, "service")
+
+    def test_js_files_not_scanned_when_not_configured(self):
+        """.js 不在 include_extensions 时不被扫描（回退 TS-only 场景）。"""
+        self.fx.write("src/components/Card.jsx", "export const Card = () => <div/>;")
+        self.fx.write("src/components/Btn.tsx", "export const Btn = () => <div/>;")
+        result = self.fx.scan(force_full=True)
+        files = set(result.files.keys())
+        self.assertNotIn("src/components/Card.jsx", files)
+        self.assertIn("src/components/Btn.tsx", files)
+
+
         """rules.yaml 调整 layers 后，即使文件 mtime/sha1 不变，layer 也必须按新规则重算。
 
         回归测试：曾出现过 scanner 从 metadata 缓存里直读 layer 的 bug（fe-salary-adjustment

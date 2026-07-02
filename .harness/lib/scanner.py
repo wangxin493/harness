@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from lib.ast_parser import ParseResult, TypeScriptParser
-from lib.rules_utils import classify_layer, normalize_layers, parse_import_aliases
+from lib.rules_utils import (
+    classify_layer,
+    normalize_layers,
+    normalize_sub_layer_convention,
+    parse_import_aliases,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +104,9 @@ class IncrementalScanner:
         self.rules = rules if rules is not None else self._load_rules()
         self.scanner_cfg = self.rules.get("scanner", {}) or {}
         self.layers = normalize_layers(self.rules.get("architecture", {}).get("layers", []))
+        self.sub_layer_convention = normalize_sub_layer_convention(
+            (self.rules.get("architecture") or {}).get("sub_layer_convention")
+        )
 
         self.source_root = self.scanner_cfg.get("source_root", "src")
         self.include_exts = tuple(self.scanner_cfg.get("include_extensions", [".ts", ".tsx", ".d.ts", ".js", ".jsx"]))
@@ -165,7 +173,7 @@ class IncrementalScanner:
                 cached = prev["record"]
                 record = FileRecord(
                     file_path=rel_path,
-                    layer=classify_layer(rel_path, self.layers),
+                    layer=classify_layer(rel_path, self.layers, self.sub_layer_convention),
                     sha1=sha1,
                     mtime=mtime,
                     parsed_ok=cached.get("parsed_ok", True),
@@ -234,7 +242,7 @@ class IncrementalScanner:
         mtime: float,
     ) -> FileRecord:
         """解析单文件并组装 FileRecord。"""
-        layer = classify_layer(rel_path, self.layers)
+        layer = classify_layer(rel_path, self.layers, self.sub_layer_convention)
 
         try:
             parse_result = self.parser.parse(abs_path)

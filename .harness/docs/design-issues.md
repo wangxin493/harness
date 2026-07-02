@@ -101,3 +101,5 @@
 | 2026-07-01 | 初始版本，基于全量代码扫描（7 个核心 lib 文件）识别 D1–D7 共 7 条设计偏差 |
 | 2026-07-01 | D4/D5/D3/D6/D1/D7 落地完成；D2 先标记为待处理（大方向，暂不改代码） |
 | 2026-07-01 | D2 加法迁移落地：新增 `probe --json` + `init --rules <file>`，Agent 起草链路打通，旧 init/setup 保留兼容 |
+| 2026-07-01 | 全量代码扫描整理：修复 4 个功能性 bug（`_generate_after_new` 构造函数参数、alias dict 格式兼容、hook installer 管理 SessionStart、`source_root: "."` 前缀过滤）；删除 5 个无引用 helper；文档标注历史草稿/试点状态 |
+| 2026-07-02 | 新增 `sub_layer_convention` 机制：`rules_utils.classify_layer` 支持约定优先归层（convention > prefix）；validator/scanner 同步使用；`ProbeReport` 新增 `sub_layer_convention_hint` 字段，probe 递归扫描 unknown 层目录后上报；`_DIR_LAYER_HINTS` 补全 utils/util/utilities/helpers/decorators → util 映射 |

@@ -231,14 +231,53 @@ class SrcLayersProbeTests(unittest.TestCase):
             {"component", "hook", "service", "type", "page"},
         )
 
+    def test_js_jsx_files_count_as_source_files(self) -> None:
+        self.fx.write("src/components/Foo.jsx", "export const Foo = () => <div/>;")
+        self.fx.write("src/api/fooService.js", "export const fooService = () => 1;")
+        report = ProjectProbe(self.fx.root).run()
+        comp = next(L for L in report.layers if L.path == "src/components/")
+        svc = next(L for L in report.layers if L.path == "src/api/")
+        self.assertEqual(comp.file_count, 1)
+        self.assertEqual(svc.file_count, 1)
+        self.assertIn("Foo", comp.sample_names)
+        self.assertIn("fooService", svc.sample_names)
+
+    def test_file_count_not_limited_by_naming_sample_limit(self) -> None:
+        for i in range(65):
+            self.fx.write(f"src/components/C{i}.tsx", "export const X = () => null;")
+        report = ProjectProbe(self.fx.root).run()
+        comp = next(L for L in report.layers if L.name == "component")
+        self.assertEqual(comp.file_count, 65)
+        self.assertLessEqual(len(comp.sample_names), 10)
+
     def test_unknown_layer_marked(self) -> None:
         self.fx.write("src/weird/whatever.ts", "export const x = 1;")
         report = ProjectProbe(self.fx.root).run()
         self.assertTrue(any(L.name == "unknown" for L in report.layers))
 
+    def test_dual_stack_source_root_hint(self) -> None:
+        self.fx.write("src/frontend/module/Foo.ts", "export const x = 1;")
+        self.fx.write("src/backend/server.js", "module.exports = {};")
+        report = ProjectProbe(self.fx.root).run()
+        self.assertIn("dual-stack-hint:src/frontend", report.notes)
+        self.assertTrue(
+            any(L.path == "src/frontend/module/" and L.name == "unknown"
+                for L in report.layers),
+        )
+        self.assertFalse(any(L.path == "src/backend/" for L in report.layers))
+
     def test_no_src(self) -> None:
         report = ProjectProbe(self.fx.root).run()
         self.assertEqual(report.layers, [])
+
+    def test_singular_service_dir_detected(self) -> None:
+        self.fx.write("src/service/userApi.ts", "export const userApi = () => 1;")
+        self.fx.write("src/components/Foo.tsx", "export const Foo = () => null;")
+        report = ProjectProbe(self.fx.root).run()
+        self.assertTrue(
+            any(L.path == "src/service/" and L.name == "service"
+                for L in report.layers),
+        )
 
     def test_alternate_layer_names(self) -> None:
         # views / composables / apis / models 应该被识别成对应 layer
@@ -249,6 +288,36 @@ class SrcLayersProbeTests(unittest.TestCase):
         report = ProjectProbe(self.fx.root).run()
         kinds = {L.name for L in report.layers}
         self.assertEqual(kinds, {"page", "hook", "service", "type"})
+
+    def test_sub_layer_convention_hint_populated_for_unknown_dir(self) -> None:
+        # module/ 是 unknown 层，内部有 components/ 和 hooks/ 子目录
+        self.fx.write("src/module/UserModule/components/UserCard.tsx",
+                      "export const UserCard = () => null;")
+        self.fx.write("src/module/UserModule/hooks/useUser.ts",
+                      "export const useUser = () => null;")
+        self.fx.write("src/module/UserModule/utils/format.ts",
+                      "export const format = () => null;")
+        report = ProjectProbe(self.fx.root).run()
+        hint = report.sub_layer_convention_hint
+        self.assertEqual(hint.get("components"), "component")
+        self.assertEqual(hint.get("hooks"), "hook")
+        self.assertEqual(hint.get("utils"), "util")
+
+    def test_sub_layer_convention_hint_empty_when_no_unknown(self) -> None:
+        # 全部一级目录都有明确层名，无 unknown → hint 为空
+        self.fx.write("src/components/Foo.tsx", "export const Foo = () => null;")
+        self.fx.write("src/hooks/useFoo.ts", "export const useFoo = () => null;")
+        report = ProjectProbe(self.fx.root).run()
+        self.assertEqual(report.sub_layer_convention_hint, {})
+
+    def test_sub_layer_convention_hint_not_duplicate(self) -> None:
+        # 多个 unknown 目录里都有 components/，hint 只记录一次
+        self.fx.write("src/moduleA/Foo/components/A.tsx", "export const A = () => null;")
+        self.fx.write("src/moduleB/Bar/components/B.tsx", "export const B = () => null;")
+        report = ProjectProbe(self.fx.root).run()
+        hint = report.sub_layer_convention_hint
+        # components 出现多次但 hint 里只有一条
+        self.assertEqual(list(hint.keys()).count("components"), 1)
 
 
 class NamingProbeTests(unittest.TestCase):

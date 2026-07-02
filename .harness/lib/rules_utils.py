@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def parse_import_aliases(scanner_cfg: Dict) -> List[Tuple[str, str]]:
@@ -24,8 +24,12 @@ def parse_import_aliases(scanner_cfg: Dict) -> List[Tuple[str, str]]:
 
     single = scanner_cfg.get("import_alias")
     if isinstance(single, str) and single:
+        # 旧格式：import_alias: "@/"（字符串）
         target = scanner_cfg.get("import_alias_target") or source_root
         _append_alias(aliases, single, target)
+    elif isinstance(single, dict):
+        # init_resolver 写出的格式：{"prefix": "@/", "target": "src/"}
+        _append_alias(aliases, single.get("prefix"), single.get("target"))
 
     if not aliases:
         _append_alias(aliases, "@/", source_root)
@@ -54,14 +58,51 @@ def normalize_layers(layers_cfg: List[Dict]) -> List[Dict]:
     return normalized
 
 
-def classify_layer(rel_posix: str, layers: List[Dict]) -> str:
-    """按路径前缀匹配文件所属层。"""
+def normalize_sub_layer_convention(convention_cfg) -> Dict[str, str]:
+    """规范化 architecture.sub_layer_convention。
+
+    返回 {子目录名: 层名} 的映射，例如：
+        {"components": "component", "hooks": "hook", "utils": "util"}
+    """
+    if not isinstance(convention_cfg, dict):
+        return {}
+    return {
+        str(k).rstrip("/"): str(v)
+        for k, v in convention_cfg.items()
+        if isinstance(k, str) and isinstance(v, str) and k and v
+    }
+
+
+def classify_layer(
+    rel_posix: str,
+    layers: List[Dict],
+    sub_layer_convention: Optional[Dict[str, str]] = None,
+) -> str:
+    """按路径前缀匹配文件所属层。
+
+    匹配优先级：
+    1. 精确前缀匹配（原逻辑）：路径以某层的 paths 条目开头，直接返回该层。
+    2. sub_layer_convention 匹配（新增）：路径包含约定子目录段时，返回对应层。
+       例如：配置 {"components": "component"} 后，任意层下的 .../components/...
+       文件都会被归为 component 层，无论父目录叫 module/、pages/ 还是 views/。
+    """
     normalized_rel = rel_posix.replace("\\", "/")
+
+    # 1. sub_layer_convention 优先：局部子目录约定覆盖父层归类
+    #    从路径最深处往上找，越靠近文件的目录段越优先
+    if sub_layer_convention:
+        parts = normalized_rel.split("/")
+        for part in reversed(parts[:-1]):  # 跳过最后一段（文件名本身）
+            if part in sub_layer_convention:
+                return sub_layer_convention[part]
+
+    # 2. 精确前缀匹配（无 convention 命中时兜底）
     for layer in layers:
         for prefix in layer.get("paths") or []:
             normalized_prefix = prefix.rstrip("/")
             if normalized_rel == normalized_prefix or normalized_rel.startswith(normalized_prefix + "/"):
                 return layer.get("name") or "unknown"
+
     return "unknown"
 
 

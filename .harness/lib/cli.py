@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Harness 2.0 CLI —— P0 最小版
+"""Harness 2.0 CLI.
 
-仅实现执行清单要求的命令：
-- harness scan [--full]            扫描项目代码（生成 dep graph + project context）
-- harness validate <file>          验证单文件（AST + 架构 + 禁用导入）
-
-P1 会扩展：mode / status / lesson / sync / generate / fix / doctor / upgrade
-（设计文档 §五、执行清单 P1 #9–#11）。
+提供接入、扫描、生成、校验、治理模式、经验市场、模板新建、自动修复和
+doctor/check 等项目内代码治理命令。历史设计文档中的早期 CLI 草稿不再作为
+当前命令清单依据；以本文件和 `harness --help` 为准。
 """
 
 from __future__ import annotations
@@ -422,7 +419,7 @@ def _file_should_validate(project_dir: Path, file_path: str) -> bool:
 
     rules = _load_rules_safe(project_dir)
     scanner_cfg = (rules.get("scanner") or {}) if isinstance(rules, dict) else {}
-    source_root = (scanner_cfg.get("source_root") or "src").rstrip("/")
+    source_root = (scanner_cfg.get("source_root") or "src").replace("\\", "/").rstrip("/")
     include_exts = tuple(scanner_cfg.get("include_extensions")
                           or [".ts", ".tsx", ".d.ts", ".js", ".jsx"])
     exclude_globs = list(scanner_cfg.get("exclude_globs") or [])
@@ -438,10 +435,11 @@ def _file_should_validate(project_dir: Path, file_path: str) -> bool:
     else:
         rel = file_path.replace("\\", "/")
 
-    # 2) source_root 前缀
-    src_prefix = source_root + "/"
-    if not (rel == source_root or rel.startswith(src_prefix)):
-        return False
+    # 2) source_root 前缀；"." / "" 表示项目根，不做前缀过滤
+    if source_root not in ("", "."):
+        src_prefix = source_root + "/"
+        if not (rel == source_root or rel.startswith(src_prefix)):
+            return False
 
     # 3) exclude_dirs（任一路径分量命中即排除）
     parts = rel.split("/")
@@ -619,9 +617,8 @@ def new_cmd(kind: str, name: str, force: bool,
 
 
 def _generate_after_new(project_dir: Path) -> None:
-    harness_dir = project_dir / ".harness"
     try:
-        Generator(project_dir, harness_dir).generate_all()
+        _build_generator(project_dir).generate_all()
     except Exception:
         pass  # generate 失败不影响 new 的成功状态
 

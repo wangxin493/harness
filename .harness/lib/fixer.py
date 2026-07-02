@@ -331,23 +331,3 @@ class Fixer:
         finally:
             Path(patch_path).unlink(missing_ok=True)
 
-
-# ---------------------------------------------------------------------------
-# 便捷函数（CLI 用）
-# ---------------------------------------------------------------------------
-
-
-def fix_file_to_dict(
-    file_path: str,
-    project_dir: Optional[Path] = None,
-    apply: bool = False,
-) -> Dict:
-    """供 CLI 使用的便捷入口：返回 JSON 友好的 dict。"""
-    fixer = Fixer(project_dir or Path.cwd())
-    result = fixer.fix_file(file_path, apply=apply)
-    return {
-        "patches": [asdict(p) for p in result.patches],
-        "instructions": [asdict(i) for i in result.instructions],
-        "applied": result.applied,
-        "stash_ref": result.stash_ref,
-    }

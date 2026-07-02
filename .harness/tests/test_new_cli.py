@@ -139,11 +139,13 @@ class TestNewCli(unittest.TestCase):
         self.assertEqual(payload["file"], "src/types/User.ts")
 
     def test_json_success_triggers_generate(self):
-        with patch.object(cli_module.Generator, "generate_all") as generate_all:
+        with patch.object(cli_module, "_build_generator") as build_generator:
+            generator = build_generator.return_value
             result = self.runner.invoke(
                 cli_module.cli, ["new", "type", "User", "--json"])
         self.assertEqual(result.exit_code, 0, result.output)
-        generate_all.assert_called_once()
+        build_generator.assert_called_once_with(self.fx.root)
+        generator.generate_all.assert_called_once()
 
     def test_json_invalid_name(self):
         result = self.runner.invoke(

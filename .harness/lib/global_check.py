@@ -303,11 +303,3 @@ def _rotate_min(seq: List[str]) -> List[str]:
     pivot = min(range(len(seq)), key=lambda i: seq[i])
     return seq[pivot:] + seq[:pivot]
 
-
-# ---------------------------------------------------------------------------
-# 便捷函数
-# ---------------------------------------------------------------------------
-
-
-def run_global_checks(project_dir: Path) -> GlobalCheckResult:
-    return GlobalChecker(project_dir=project_dir).run()

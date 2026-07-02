@@ -1,8 +1,13 @@
 # Harness 接入预设（presets.md）
 
 `harness init` 是探测器 + 协商器，对常见项目形态能自动生成可用的 `rules.yaml`，
-但有几类项目探测器猜不准、需要你跑完后手动改两行。本文档列出四类典型形态
-+ 推荐配置，作为快速对照。
+但有几类项目探测器猜不准、需要你跑完后手动改两行。
+
+对于结构复杂或存量代码多的项目，推荐先用 `harness probe --json` 输出项目 facts，
+再由 Agent 根据 facts 起草 `rules.yaml`，然后通过 `harness init --rules <file>` 写盘。
+这样可以避免 resolver 对目录语义做不准确的自动推断。
+
+本文档列出四类典型项目形态 + 推荐配置，作为快速对照参考。
 
 ## 出厂默认（基线）
 
@@ -139,7 +144,7 @@ architecture:
     # ...
 ```
 
-但 P0 时期不推荐这条路——增量 scan 在多 source_root 下没充分测过。
+但当前不推荐这条路——增量 scan 在多 source_root 下没有作为主路径充分验证。
 
 ---
 
@@ -151,7 +156,7 @@ architecture:
 |---|---|
 | `imports.forbidden_imports` | 业务语义（例：废弃的 `@/legacy`、不让用的 `@/api/mockApi`） |
 | `imports.forbidden_suggestions` | 配合 forbidden_imports，给 Agent 的修复提示 |
-| `imports.rewrites` | `harness fix --apply` 的旧前缀→新前缀映射 |
+| `imports.rewrites` | `harness fix <file> --apply` 的旧前缀→新前缀映射（仅 import-forbidden 子集） |
 | `checks.hook_call_check.excluded_callees` | 业务里有同名但非 React hook 的函数（罕见） |
 | `checks.unused_exports.entry_points` | SPA / Node 入口；默认覆盖 `src/index.{ts,tsx}` 和 `src/main.{ts,tsx}`，多入口或非常规结构需追加 |
 

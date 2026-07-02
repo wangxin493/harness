@@ -2,7 +2,25 @@
 
 ## 🚀 在新项目中接入 harness
 
-> 把 `.harness/` 整个目录拷到目标项目根，**一条命令搞定**。
+> 把 `.harness/` 整个目录拷到目标项目根，推荐先探测再起草规则。
+
+### Agent 起草链路（推荐，更准确）
+
+```bash
+# 1. 只读探测 facts
+.harness/commands/harness probe --json > /tmp/harness-probe.json
+
+# 2. Agent 根据 facts 起草 rules.yaml（不确定的层归属必须先问用户）
+
+# 3. 写入规则
+.harness/commands/harness init --rules /tmp/harness-rules.yaml
+
+# 4. 安装 Agent hook + 扫描
+.harness/commands/harness install --agent claude   # 或 ducc / baidu-cc
+.harness/commands/harness scan
+```
+
+### 快速接入（旧链路，适合标准结构新项目）
 
 ```bash
 # 一键接入：内部按序跑 init --yes + install + scan
@@ -31,25 +49,26 @@
 
 ### 老项目接入（务实派）
 
-老项目的存量违规通常**不敢碰**——动一行可能炸一片。建议**只管增量，不管存量**：
+老项目的存量违规通常**不敢碰**——动一行可能炸一片。建议先完成接入和 baseline，再决定是否只管增量：
 
 ```bash
-# 1) 一键接入
-.harness/commands/harness setup --agent claude
+# 1) 先关闭治理，避免规则未对齐时误拦截
+.harness/commands/harness mode off
 
-# 2) 直接 strict（不要"先 relaxed 后收紧"——老代码一辈子都不会被收紧）
-.harness/commands/harness mode strict
+# 2) 只读探测 facts，交给 Agent 起草 rules.yaml
+.harness/commands/harness probe --json > /tmp/harness-probe.json
+.harness/commands/harness init --rules /tmp/harness-rules.yaml
 
-# 3) 不跑 harness check，不修存量违规
-#    只让"今天起 Agent 改的代码"符合规则
-#    历史代码什么样什么样
+# 3) 安装 hook + 扫描
+.harness/commands/harness install --agent claude
+.harness/commands/harness scan
+.harness/commands/harness doctor
 ```
 
-之后只有当 Agent 主动去改某个老文件时，PostToolUse hook 才会拦它——届时 Agent 会顺手把那一处违规修了，**渐进式**清理而不是一次性大改。
-
-如果存量违规你**确实想看一眼**（不打算修，只是评估）：
+如果只想约束 Agent 后续改动，可以在规则对齐后切到 `strict`，但不强制一次性修完存量问题。想评估 baseline 时用：
 
 ```bash
+.harness/commands/harness validate-all --json | python3 -m json.tool | head -40
 .harness/commands/harness check --json | python3 -m json.tool | head -40
 ```
 
@@ -145,7 +164,7 @@ _暂无经验记录；可用 `harness lesson add` 添加_
 - 修改 `src/**/*.{ts,tsx,d.ts}` → PostToolUse hook 自动跑 `harness validate`
 - 拦截了？看错误信息按 reason 改完再保存即可
 - 新建文件用 `harness new <kind> <name> [--path <dir>]`（详见 [`generated/claude.md`](generated/claude.md) 末节）
-- 自动修复 `import-forbidden` 子集：`harness fix <file> --apply`
+- 自动修复 `import-forbidden` 子集：`harness fix <file> --apply`（仅 import-forbidden，非通用 autofix）
 - 同步团队经验：`harness sync`
 - 体检环境：`harness doctor`
 

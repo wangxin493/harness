@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AST 解析器 —— tree-sitter 封装
 
-职责：纯语法解析。把 TS/TSX 源码解析为中性的 ParseResult。
+职责：纯语法解析。把 TS/TSX/JS/JSX 源码解析为中性的 ParseResult。
 不做：路径规则、组件/Hook/API 分类（这些在 scanner 中根据 rules.yaml 完成）。
 
 P0 提取的语法节点：
@@ -83,8 +83,8 @@ class ParseResult:
 class TypeScriptParser:
     """tree-sitter-typescript 0.21 封装。
 
-    - .ts  → typescript grammar
-    - .tsx → tsx grammar
+    - .ts / .js  → typescript grammar
+    - .tsx / .jsx → tsx grammar
     - 其它扩展名 → ValueError
     """
 
@@ -103,10 +103,10 @@ class TypeScriptParser:
 
         path = Path(file_path)
         suffix = path.suffix.lower()
-        if suffix == ".ts":
+        if suffix in (".ts", ".js"):
             language = "typescript"
             parser = self._get_ts_parser()
-        elif suffix == ".tsx":
+        elif suffix in (".tsx", ".jsx"):
             language = "tsx"
             parser = self._get_tsx_parser()
         else:

@@ -79,7 +79,7 @@ imports:
 # 扫描器配置
 scanner:
   source_root: "src"
-  include_extensions: [".ts", ".tsx", ".d.ts"]
+  include_extensions: [".ts", ".tsx", ".d.ts", ".js", ".jsx"]
   exclude_globs:
     - "**/*.test.ts"
     - "**/*.test.tsx"

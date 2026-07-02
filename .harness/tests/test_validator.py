@@ -115,6 +115,34 @@ class TestCodeValidator(unittest.TestCase):
         arch_errs = [i for i in issues if i.category == "architecture"]
         self.assertEqual(arch_errs, [])
 
+    def test_relative_import_cross_layer_is_checked(self):
+        self.fx.write(
+            "src/components/Btn.tsx",
+            "export const Btn = () => <button/>;\n",
+        )
+        self.fx.write(
+            "src/api/itemService.ts",
+            "import { Btn } from '../components/Btn';\nexport const x = Btn;\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/itemService.ts")
+        arch_issue = next(i for i in issues if i.rule_id == "arch-service-import")
+        self.assertEqual(arch_issue.severity, "error")
+        self.assertIn("component", arch_issue.message)
+
+    def test_relative_import_allowed_layer_is_not_reported(self):
+        self.fx.write(
+            "src/api/itemService.ts",
+            "export const fetchItem = () => null;\n",
+        )
+        self.fx.write(
+            "src/components/Btn.tsx",
+            "import { fetchItem } from '../api/itemService';\n"
+            "export const Btn = () => { fetchItem(); return <button/>; };\n",
+        )
+        issues = self.fx.validator().validate_file("src/components/Btn.tsx")
+        arch_errs = [i for i in issues if i.category == "architecture"]
+        self.assertEqual(arch_errs, [])
+
     # ------------------------------------------------------------- 禁用导入
 
     def test_forbidden_import_services(self):
@@ -679,6 +707,41 @@ class TestImportAlias(unittest.TestCase):
         arch = [i for i in issues if i.category == "architecture"]
         self.assertEqual(len(arch), 1)
         self.assertEqual(arch[0].rule_id, "arch-service-import")
+    def test_single_alias_dict_format_supported(self):
+        """兼容 init_resolver 写出的 import_alias dict 格式。"""
+        rules = textwrap.dedent("""\
+        architecture:
+          layers:
+            - name: service
+              paths: ["app/api/"]
+              can_import: ["type"]
+            - name: hook
+              paths: ["app/hooks/"]
+              can_import: ["type"]
+        imports:
+          forbidden_imports: []
+        scanner:
+          import_alias:
+            prefix: "~/"
+            target: "app/"
+        checks:
+          hook_call_check:
+            enabled: false
+          name_similarity:
+            enabled: false
+          naming:
+            enabled: false
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "app/api/itemService.ts",
+            "import { useFoo } from '~/hooks/useFoo';\n"
+            "export const x = useFoo;\n",
+        )
+        issues = self.fx.validator().validate_file("app/api/itemService.ts")
+        arch = [i for i in issues if i.category == "architecture"]
+        self.assertEqual(len(arch), 1)
+        self.assertEqual(arch[0].rule_id, "arch-service-import")
 
 
 # ============================================================================
@@ -803,6 +866,65 @@ class TestNamingViolation(unittest.TestCase):
         issues = self.fx.validator().validate_file("src/utils/helper.ts")
         naming = [i for i in issues if i.category == "naming"]
         self.assertEqual(naming, [])
+
+    def test_sub_layer_convention_allows_local_component_hooks(self):
+        rules = textwrap.dedent("""\
+        architecture:
+          sub_layer_convention:
+            components: component
+            hooks: hook
+          layers:
+            - name: page
+              paths: ["src/pages/"]
+              can_import: ["component", "hook"]
+            - name: component
+              paths: ["src/components/"]
+              can_import: ["hook"]
+            - name: hook
+              paths: ["src/hooks/"]
+              can_import: []
+        checks:
+          hook_call_check:
+            enabled: true
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/pages/SalaryPage/components/RiskHint.tsx",
+            "import { useEffect } from 'react';\n"
+            "export const RiskHint = () => { useEffect(() => {}, []); return null; };\n",
+        )
+        issues = self.fx.validator().validate_file("src/pages/SalaryPage/components/RiskHint.tsx")
+        hook_errors = [i for i in issues if i.rule_id == "hook-call-misplaced"]
+        self.assertEqual(hook_errors, [])
+
+    def test_sub_layer_convention_checks_import_target_layer(self):
+        rules = textwrap.dedent("""\
+        architecture:
+          sub_layer_convention:
+            components: component
+          layers:
+            - name: page
+              paths: ["src/views/"]
+              can_import: ["component"]
+            - name: component
+              paths: ["src/components/"]
+              can_import: []
+            - name: service
+              paths: ["src/api/"]
+              can_import: []
+        """)
+        (self.fx.root / ".harness" / "rules.yaml").write_text(rules, encoding="utf-8")
+        self.fx.write(
+            "src/views/Dashboard/components/Panel.tsx",
+            "export const Panel = () => null;\n",
+        )
+        self.fx.write(
+            "src/api/salaryService.ts",
+            "import { Panel } from '../views/Dashboard/components/Panel';\nexport const x = Panel;\n",
+        )
+        issues = self.fx.validator().validate_file("src/api/salaryService.ts")
+        arch_issue = next(i for i in issues if i.rule_id == "arch-service-import")
+        self.assertIn("component", arch_issue.message)
 
 
 if __name__ == "__main__":
