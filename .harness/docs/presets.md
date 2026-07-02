@@ -31,7 +31,7 @@ src/
 
 ---
 
-## 1. React + src/ 三层（note-h5 形态，零改动）
+## 1. React + src/ 标准三层（零改动）
 
 **项目特征**：
 - React + TS，单包，`src/{components, pages, hooks, api, types}/` 齐全
@@ -180,5 +180,6 @@ harness validate src/components/Foo.tsx
 
 如果 `scan` 输出里 `total_files=0`，说明 `scanner.source_root` 或
 `include_extensions` 没对上；如果 `check` 报一堆 naming-violation，
-说明 `init` 时该选 `adopt:<style>` 而你选了 `keep-default`，
-直接改 `rules.yaml naming.*` 即可（不需要重跑 init）。
+说明 `init` 时该选 `adopt:<style>` 而你选了 `keep-default`。
+把 `rules.yaml naming.*` 改成 `adopt:<style>` 后，再运行
+`harness scan --reset-baseline` 固定当前存量命名违规，后续只报新增。

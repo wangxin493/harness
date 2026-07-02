@@ -17,6 +17,9 @@ dist
 dist-ssr
 *.local
 
+# Test cache
+.pytest_cache/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -36,8 +39,8 @@ dist-ssr
 # Comate AI development history (not to be committed)
 .comate/dev-history/
 
-# Harness AI Framework runtime data (not to be committed)
-harness/tasks/*.json
-harness/trace/*.json
-harness/memory/lessons-*.md
-
+# Harness runtime data (not to be committed)
+.harness/context/
+.harness/generated/
+.harness/memory/lessons-*.md
+.harness/mode-config.json

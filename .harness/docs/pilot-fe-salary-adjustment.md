@@ -1,5 +1,7 @@
 # 试点报告:fe-salary-adjustment 接入 Harness 2.0
 
+> ⚠️ 内部试点记录，不随 npm 包发布。
+
 > 日期:2026-06-29  
 > 试点项目:`/Users/xiaowangtongzhi/Desktop/harness/fe-salary-adjustment`(`test_harness_add` 分支)  
 > 试点目标:**借老项目暴露 harness 2.0 当前的不足**,不是修干净老项目。  

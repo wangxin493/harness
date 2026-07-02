@@ -11,6 +11,7 @@ mode-config.json
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
 # 环境
 .venv/

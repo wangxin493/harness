@@ -1,6 +1,5 @@
 # Harness 2.0 验证手册
 
-> 适用分支: `feat-yewu`
 > 最后更新: 2026-06-18
 >
 > 本文档不入库（也可入库，看你判断）；用途是对着跑、确认每个功能链路通。
@@ -10,7 +9,7 @@
 ## 0. 准备工作
 
 ```bash
-cd /Users/xiaowangtongzhi/Desktop/note-h5
+cd <project-root>
 ```
 
 ### 0.1 全量测试基线
@@ -76,7 +75,7 @@ sed -n '40,60p' .harness/generated/claude.md
 ### 正向（合规应通过）
 
 ```bash
-.harness/commands/harness validate src/components/UserTable.tsx
+.harness/commands/harness validate src/components/SomeComponent.tsx
 ```
 
 期望：`✅ ... 通过`，exit 0。
@@ -363,16 +362,16 @@ ls -la .claude/ CLAUDE.md
 期望：`settings.json` + `CLAUDE.md` 都被创建，install 流程跑通。
 
 ```bash
-cd /Users/xiaowangtongzhi/Desktop/note-h5
+cd <project-root>
 rm -rf /tmp/harness-test
 ```
 
 ### 7.4 与第三方 hook 共存（用单测验，无法现场跑）
 
 ```bash
-cd /Users/xiaowangtongzhi/Desktop/note-h5/.harness
+cd <project-root>/.harness
 .venv/bin/python -m unittest tests.test_installer.TestClaudeInstallerSettings.test_install_preserves_third_party_hooks -v 2>&1 | tail -5
-cd /Users/xiaowangtongzhi/Desktop/note-h5
+cd <project-root>
 ```
 
 期望：`ok`。

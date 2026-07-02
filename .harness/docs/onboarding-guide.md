@@ -1,8 +1,7 @@
 # Harness 2.0 接入指南
 
 > 适用版本：Harness 2.0（`VERSION` 文件以实际为准）  
-> 最后更新：2026-07-02  
-> 对应 note-h5 主仓分支：`feat-yewu`
+> 最后更新：2026-07-02
 
 ---
 
@@ -41,20 +40,21 @@
 `cd` 到目标项目根目录，复制以下**一行命令**直接执行：
 
 ```bash
-mkdir -p .harness && rsync -a --exclude 'rules.yaml' --exclude 'context/' --exclude 'mode-config.json' --exclude 'memory/' --exclude 'generated/' --exclude '.venv/' --exclude 'README.md' --exclude 'hooks/.config.sh' --exclude 'tests/' --exclude 'docs/' --exclude 'ARCHITECTURE.md' --exclude 'VERIFY.md' /Users/xiaowangtongzhi/Desktop/note-h5/.harness/ .harness/ && chmod +x .harness/commands/harness && python3 -m venv .harness/.venv && .harness/.venv/bin/pip install -r .harness/requirements.txt && .harness/commands/harness setup --agent ducc --interactive
+mkdir -p .harness && rsync -a --exclude 'rules.yaml' --exclude 'context/' --exclude 'mode-config.json' --exclude 'memory/' --exclude 'generated/' --exclude '.venv/' --exclude 'README.md' --exclude 'hooks/.config.sh' --exclude 'tests/' --exclude 'docs/' --exclude 'ARCHITECTURE.md' --exclude 'VERIFY.md' <harness-source>/.harness/ .harness/ && chmod +x .harness/commands/harness && python3 -m venv .harness/.venv && .harness/.venv/bin/pip install -r .harness/requirements.txt && .harness/commands/harness setup --agent ducc --interactive
 ```
 
 这行命令依次做了：
 
 | 步骤 | 说明 |
 |---|---|
-| `rsync …` | 从 note-h5 主仓复制 `.harness/` 骨架，跳过 `rules.yaml / context/ / generated/ / .venv/` 等项目产物 |
+| `rsync …` | 从 harness 工程克隆路径（`<harness-source>`）复制 `.harness/` 骨架，跳过 `rules.yaml / context/ / generated/ / .venv/` 等项目产物 |
 | `chmod +x` | 给 `harness` 命令加执行权限 |
 | `python3 -m venv` + `pip install` | 建 `.harness/.venv` 并安装依赖 |
 | `harness setup --agent ducc --interactive` | 交互式完成 `init`（生成 rules.yaml）+ `install`（写 CLAUDE.md + settings.json）+ `scan`（生成 generated/） |
 
 > **新项目 / 不想交互**：去掉末尾的 `--interactive`，setup 会用全默认值自动跑完。  
 > **使用 claude / baidu-cc**：把 `--agent ducc` 改成 `--agent claude` 或 `--agent baidu-cc`。
+> **关于 `<harness-source>`**：当前阶段它表示 harness 工程的本地克隆路径；后续 npm 包化后，这一步会替换为 `npm install --save-dev @befe/harness`。
 
 ---
 
@@ -130,7 +130,7 @@ init 分三阶段：
 | `source_root` 有双层（如 `src/frontend/`） | 选带 `frontend` 的那个 | 让 harness 只看前端代码 |
 | unknown 目录（harness 不认识的目录） | 看💡建议选 / 不确定选"先放着" | 带💡的是 harness 自动推测的，可以接受或跳过 |
 | asset 类目录（images/ styles/ css/） | 选 ignore | 不需要校验样式/图片 |
-| 命名风格冲突 | 优先选 `adopt:<style>` | 让 harness 与现有代码对齐，减少存量噪音；存量不报，新增代码才受约束 |
+| 命名风格冲突 | 优先选 `adopt:<style>` | 首次 scan 会把存量命名违规写入 `.harness/context/naming-baseline.json`，之后命中基准线的不报，只报新增违规 |
 | 不想引入任何命名约束的层 | 选 `disable` | 该层命名校验完全关闭 |
 
 > 💡 提示：resolver 会根据目录名和目录内文件名自动推测层（如 `utils/` → util 层，`hooks/` → hook 层），屏幕上会显示推测理由，可以直接接受。
@@ -168,6 +168,8 @@ imports:
 
 naming:                       # ← 老项目建议先全删或全用 adopt 方式，不卡存量
 ```
+
+> `adopt:<style>` 的存量快照默认只在首次 `scan` 时固定；如果确认要重新吸收当前存量命名违规，显式运行 `harness scan --reset-baseline`。
 
 ### 典型项目形态对照
 
