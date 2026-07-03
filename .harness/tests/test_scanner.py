@@ -234,6 +234,43 @@ class TestIncrementalScanner(unittest.TestCase):
         self.assertNotIn("src/components/Card.jsx", files)
         self.assertIn("src/components/Btn.tsx", files)
 
+    def test_scan_writes_reuse_index_summary(self):
+        (self.fx.root / "package.json").write_text(json.dumps({
+            "dependencies": {"lodash": "^4.17.21", "react": "^18.0.0"},
+            "devDependencies": {"date-fns": "^3.0.0", "typescript": "^5.0.0"},
+        }), encoding="utf-8")
+        self.fx.write("src/utils/debounce.ts", "export const debounce = () => null;\n")
+        self.fx.write("src/utils/format.ts", "export const format = () => null;\n")
+
+        self.fx.scan(force_full=True)
+
+        data = json.loads(
+            (self.fx.harness_dir / "context" / "project-context.json").read_text(encoding="utf-8")
+        )
+        reuse = data["reuse_index"]
+        self.assertEqual(reuse["packages"], ["date-fns", "lodash"])
+        self.assertEqual(reuse["utility_dirs"][0]["path"], "src/utils/")
+        self.assertEqual(reuse["utility_dirs"][0]["file_count"], 2)
+        self.assertGreaterEqual(reuse["utility_dirs"][0]["export_count"], 2)
+
+    def test_reuse_index_can_be_disabled(self):
+        rules = RULES_YAML + textwrap.dedent("""\
+        reuse_index:
+          enabled: false
+        """)
+        (self.fx.harness_dir / "rules.yaml").write_text(rules, encoding="utf-8")
+        (self.fx.root / "package.json").write_text(json.dumps({
+            "dependencies": {"lodash": "^4.17.21"},
+        }), encoding="utf-8")
+        self.fx.write("src/utils/debounce.ts", "export const debounce = () => null;\n")
+
+        self.fx.scan(force_full=True)
+
+        data = json.loads(
+            (self.fx.harness_dir / "context" / "project-context.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(data["reuse_index"], {})
+
     def test_scan_generates_naming_baseline_for_adopt_rules(self):
         rules = RULES_YAML + textwrap.dedent("""\
         naming:

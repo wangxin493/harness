@@ -210,6 +210,42 @@ class TestAdapterRender(unittest.TestCase):
         out = ClaudeAdapter().render(self.ctx)
         self.assertIn("不要为了绕过验证自行执行 `harness mode relaxed/off`", out)
 
+    def test_agent_instructions_render_first(self):
+        rules = dict(self.rules)
+        rules["agent_instructions"] = [
+            {
+                "id": "ask-when-unclear",
+                "enabled": True,
+                "content": "不确定时先问用户，不要自行推测。",
+            },
+            {
+                "id": "disabled",
+                "enabled": False,
+                "content": "不应出现",
+            },
+        ]
+        ctx = _make_ctx(rules=rules, project_context=PROJECT_CONTEXT, lessons=[])
+        out = ClaudeAdapter().render(ctx)
+        self.assertIn("## 🧭 AI 行为指令", out)
+        self.assertIn("不确定时先问用户", out)
+        self.assertNotIn("不应出现", out)
+        self.assertLess(out.index("## 🧭 AI 行为指令"), out.index("## ⛔ 强制规则"))
+
+    def test_reuse_index_renders_short_summary(self):
+        project_context = dict(PROJECT_CONTEXT)
+        project_context["reuse_index"] = {
+            "packages": ["lodash", "date-fns"],
+            "utility_dirs": [
+                {"path": "src/utils/", "file_count": 3, "export_count": 8},
+            ],
+        }
+        ctx = _make_ctx(rules=self.rules, project_context=project_context, lessons=[])
+        out = ClaudeAdapter().render(ctx)
+        self.assertIn("## ♻️ 可复用能力", out)
+        self.assertIn("lodash, date-fns", out)
+        self.assertIn("src/utils/", out)
+        self.assertIn("新增通用工具前先搜索并复用", out)
+
 
 # ---------------------------------------------------------------------------
 # 边界：缺数据时的降级

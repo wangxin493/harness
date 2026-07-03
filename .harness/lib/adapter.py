@@ -232,6 +232,72 @@ def _render_constraints_section(rules: Dict[str, Any]) -> str:
     )
 
 
+def _render_agent_instructions(rules: Dict[str, Any]) -> str:
+    """渲染高优先级 Agent 行为指令。
+
+    这些不是业务规则，而是 Agent 工作方式约束。默认短而强，放在文档最前，
+    让 AI 写代码前先知道怎么和用户协作。
+    """
+    raw = (rules or {}).get("agent_instructions") or []
+    if not isinstance(raw, list) or not raw:
+        return ""
+
+    lines: List[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            content = item.strip()
+            enabled = True
+        elif isinstance(item, dict):
+            enabled = bool(item.get("enabled", True))
+            content = str(item.get("content") or "").strip()
+        else:
+            continue
+        if enabled and content:
+            lines.append(f"- {content}")
+
+    if not lines:
+        return ""
+    return "## 🧭 AI 行为指令(优先遵守)\n\n" + "\n".join(lines)
+
+
+def _render_reuse_index(project_context: Dict[str, Any]) -> str:
+    """渲染可复用能力短索引。
+
+    只放摘要，不把项目内工具函数全量塞进上下文，避免 token 随项目规模膨胀。
+    """
+    reuse = (project_context or {}).get("reuse_index") or {}
+    if not isinstance(reuse, dict):
+        return ""
+
+    lines: List[str] = []
+    packages = reuse.get("packages") or []
+    if isinstance(packages, list) and packages:
+        shown = ", ".join(str(p) for p in packages[:20])
+        extra = len(packages) - 20
+        if extra > 0:
+            shown += f" 等 {len(packages)} 个依赖"
+        lines.append(f"- 已安装依赖: {shown}")
+
+    utility_dirs = reuse.get("utility_dirs") or []
+    if isinstance(utility_dirs, list) and utility_dirs:
+        parts = []
+        for item in utility_dirs[:10]:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            file_count = item.get("file_count", 0)
+            export_count = item.get("export_count", 0)
+            if path:
+                parts.append(f"`{path}`({file_count} 文件/{export_count} 导出)")
+        if parts:
+            lines.append("- 工具函数目录: " + ", ".join(parts))
+
+    if not lines:
+        return ""
+    lines.append("- 新增通用工具前先搜索并复用已有依赖或工具函数；除非有明确业务特化原因，不要重复实现 debounce/throttle/clone/format 等常见能力。")
+    return "## ♻️ 可复用能力\n\n" + "\n".join(lines)
+
+
 def _render_stats(project_context: Dict[str, Any]) -> str:
     summary = project_context.get("summary") or {}
     if not summary:
@@ -400,6 +466,12 @@ def _render_shared_body(
     constraints = _render_constraints_section(ctx.rules)
 
     parts: List[str] = []
+
+    # agent_instructions 最先——AI 看到的第一段就是工作方式约束
+    agent_instr = _render_agent_instructions(ctx.rules)
+    if agent_instr:
+        parts.append(agent_instr)
+
     if constraints:
         parts.append(constraints)
     arch_section = ["## ⛔ 强制规则", "### 三层架构", arch_block]
@@ -422,6 +494,11 @@ def _render_shared_body(
             sec.get("label", sec["key"]),
             limit=sec.get("limit", 15),
         ))
+
+    # reuse_index：项目状态 / 组件列表之后，经验索引之前
+    reuse = _render_reuse_index(ctx.project_context)
+    if reuse:
+        parts.append(reuse)
 
     parts.append("## 🔥 团队经验教训（索引）")
     parts.append(_render_lessons_brief(ctx.lessons, limit=ctx.max_lessons))

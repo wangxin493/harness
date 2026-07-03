@@ -1,5 +1,16 @@
 # Harness 2.0 规则配置（默认值，可被项目级覆盖）
 
+# AI 行为指令：高优先级，渲染到 generated/*.md 最前，AI 写代码前先读。
+# 每条可以是字符串，或 dict（含 enabled 字段，默认 true）。
+# 内置两条默认指令；项目可追加业务级 AI 行为约束。
+agent_instructions:
+  - id: ask-when-unclear
+    enabled: true
+    content: "遇到不确定的业务规则、目录归属、API 用法、实现选择时，必须先问用户；不要自行推测。"
+  - id: post-edit-self-review
+    enabled: true
+    content: "完成代码修改后，主动做一次简短自检：是否有重复逻辑（可复用已有工具或依赖）、边界条件遗漏、命名不清、复杂度过高。能直接改的直接改；涉及业务取舍或不确定的先问用户。"
+
 # 项目级硬约束(B8)
 # 这些是"业务底线",优先于架构/导入/命名规范,会渲染到所有 generated/*.md 顶部。
 # 留空 → adapter 不渲染整个章节;每条可以是字符串(简单约束)或 dict(带 why/example)。
@@ -141,3 +152,11 @@ checks:
       - "src/**/index.ts"
     # type 层导出常被 type-only import，依赖图里不进，默认豁免
     exempt_type_layer: true
+
+# 可复用能力索引扫描配置
+# enabled: false 可完全关闭（默认开启）
+# 扫描结果写入 context/project-context.json["reuse_index"]，渲染到 generated/*.md
+reuse_index:
+  enabled: true
+  # 额外的工具函数目录名（不在默认列表 utils/helpers/shared/common 中的）
+  extra_utility_dirs: []

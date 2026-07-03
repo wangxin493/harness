@@ -113,6 +113,7 @@ class IncrementalScanner:
         self.include_exts = tuple(self.scanner_cfg.get("include_extensions", [".ts", ".tsx", ".d.ts", ".js", ".jsx"]))
         self.exclude_globs = list(self.scanner_cfg.get("exclude_globs", []))
         self.exclude_dirs = set(self.scanner_cfg.get("exclude_dirs", []))
+        self.reuse_index_cfg = self.rules.get("reuse_index", {}) or {}
 
         # 路径别名（默认 "@/" 映射到 source_root/）。支持配多个。
         self.import_aliases: List[Tuple[str, str]] = parse_import_aliases(self.scanner_cfg)
@@ -556,6 +557,7 @@ class IncrementalScanner:
                 }
                 for r in result.files.values()
             ],
+            "reuse_index": self._build_reuse_index(),
         }
         (self.context_dir / "project-context.json").write_text(
             json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -600,6 +602,89 @@ class IncrementalScanner:
         return data
 
     # -- 工具 ---------------------------------------------------------------
+
+    def _build_reuse_index(self) -> Dict:
+        """扫描项目可复用能力，产出简短摘要供 adapter 渲染。
+
+        两个来源：
+        1. package.json 依赖（dependencies + devDependencies），过滤常见工具包名
+        2. source_root 下的 utils/helpers/shared/common 等目录摘要
+        """
+        result: Dict = {}
+        if self.reuse_index_cfg.get("enabled", True) is False:
+            return result
+
+        pkg_file = self.project_dir / "package.json"
+        if pkg_file.exists():
+            try:
+                pkg = json.loads(pkg_file.read_text(encoding="utf-8"))
+            except Exception:
+                pkg = {}
+            all_deps: Dict[str, str] = {}
+            for key in ("dependencies", "devDependencies", "peerDependencies"):
+                d = pkg.get(key) or {}
+                if isinstance(d, dict):
+                    all_deps.update(d)
+
+            # 常见通用工具包白名单（不含 React/Vue 等框架，不含 Babel/TS 等工具链）
+            UTILITY_PACKAGES = {
+                "lodash", "lodash-es", "ramda", "underscore",
+                "date-fns", "dayjs", "moment", "luxon",
+                "axios", "ky", "got", "superagent",
+                "immer", "immutable",
+                "uuid", "nanoid",
+                "classnames", "clsx",
+                "query-string", "qs",
+                "zod", "yup", "joi",
+                "p-limit", "p-queue",
+            }
+            matched = sorted(
+                p for p in all_deps if p in UTILITY_PACKAGES or p.startswith("@lodash/")
+            )
+            if matched:
+                result["packages"] = matched
+
+        # --- 2. 工具函数目录摘要 ---
+        UTIL_DIR_PATTERNS = {
+            "utils", "util", "helpers", "helper", "shared", "common",
+        } | {
+            d.lower() for d in (self.reuse_index_cfg.get("extra_utility_dirs") or [])
+            if isinstance(d, str) and d.strip()
+        }
+        src = self.project_dir / self.source_root
+        util_dirs = []
+        if src.is_dir():
+            for child in sorted(src.rglob("*")):
+                if not child.is_dir():
+                    continue
+                if child.name.lower() not in UTIL_DIR_PATTERNS:
+                    continue
+                # 避免 node_modules / dist / .harness 内的目录
+                parts = {p.lower() for p in child.relative_to(self.project_dir).parts}
+                if parts & {"node_modules", "dist", "build", ".harness", ".git"}:
+                    continue
+                # 统计 .ts/.tsx/.js/.jsx 文件数和导出数
+                files = [
+                    f for f in child.rglob("*")
+                    if f.is_file() and f.suffix in {".ts", ".tsx", ".js", ".jsx"}
+                ]
+                export_count = 0
+                for f in files[:50]:  # 最多数 50 个文件的导出
+                    try:
+                        pr = self.parser.parse(f)
+                        export_count += len(pr.exports)
+                    except Exception:
+                        pass
+                rel = child.relative_to(self.project_dir).as_posix() + "/"
+                util_dirs.append({
+                    "path": rel,
+                    "file_count": len(files),
+                    "export_count": export_count,
+                })
+        if util_dirs:
+            result["utility_dirs"] = util_dirs
+
+        return result
 
     def _load_rules(self) -> Dict:
         import yaml  # 延迟 import
